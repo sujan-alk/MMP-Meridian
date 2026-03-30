@@ -1,0 +1,71 @@
+"""
+FastAPI application factory.
+State is attached to app.state so all routes can access the Orchestrator, DB, and LiveFeed.
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from api.routes import router
+from utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from core.orchestrator import Orchestrator
+    from db.database import Database
+    from api.websocket import LiveFeed
+
+log = get_logger("app")
+
+
+def create_app(
+    orchestrator: "Orchestrator",
+    db: "Database",
+    live_feed: "LiveFeed",
+) -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+
+    Args:
+        orchestrator: The running Orchestrator instance
+        db: Shared Database connection
+        live_feed: The LiveFeed WebSocket broadcaster
+    """
+    app = FastAPI(
+        title="ALKIMI Market Making Bot",
+        description="REST + WebSocket API for the ALKIMI MM Bot",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # CORS — allow all origins in dev; restrict in production via env
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Attach shared state
+    app.state.orchestrator = orchestrator
+    app.state.db = db
+    app.state.live_feed = live_feed
+
+    # Register routes
+    app.include_router(router)
+
+    @app.on_event("startup")
+    async def on_startup():
+        log.info("api_server_started")
+
+    @app.on_event("shutdown")
+    async def on_shutdown():
+        log.info("api_server_stopping")
+
+    return app
