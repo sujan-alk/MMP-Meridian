@@ -288,14 +288,13 @@ async def websocket_endpoint(websocket: WebSocket):
     log.debug("ws_client_connected", clients=live_feed.client_count)
     try:
         while True:
-            # Wait for events from the live feed
-            message = await asyncio.wait_for(q.get(), timeout=30.0)
-            await websocket.send_text(message)
-    except asyncio.TimeoutError:
-        # Send a heartbeat ping to keep the connection alive
-        import json as _json
-        from utils.time_utils import now_s as _now
-        await websocket.send_text(_json.dumps({"event": "heartbeat", "timestamp": _now()}))
+            try:
+                message = await asyncio.wait_for(q.get(), timeout=30.0)
+                await websocket.send_text(message)
+            except asyncio.TimeoutError:
+                import json as _json
+                from utils.time_utils import now_s as _now
+                await websocket.send_text(_json.dumps({"event": "heartbeat", "timestamp": _now()}))
     except WebSocketDisconnect:
         pass
     except Exception as exc:

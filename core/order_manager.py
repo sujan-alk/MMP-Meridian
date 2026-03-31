@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from config.schema import ExchangeBotConfig
 from db.database import Database
-from db import insert_order, update_order_status
+from db.queries import insert_order, update_order_status
 from exchange.base import BaseConnector, Order
 from safety.rate_limiter import RateLimiter
 from utils.logging import get_logger
