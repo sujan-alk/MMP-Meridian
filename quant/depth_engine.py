@@ -76,12 +76,16 @@ class DepthEngine:
 
         raw_amounts = ratio * side_budget
 
-        # Apply minimum order size
+        # Apply minimum order size, then cap total back to side_budget.
+        # (min_order × n_levels can exceed side_budget on tight budgets.)
         amounts = np.maximum(raw_amounts, self.cfg.min_order_usd)
-
-        # Renormalize to respect side budget after min_order_usd clamp
-        if amounts.sum() > 0:
-            amounts = amounts * (side_budget / amounts.sum())
+        total_after_min = float(amounts.sum())
+        if total_after_min > side_budget:
+            scale = side_budget / total_after_min
+            scaled = amounts * scale
+            # Only apply the scale if every level still meets min_order after scaling
+            if float(scaled.min()) >= self.cfg.min_order_usd:
+                amounts = scaled
 
         return amounts.tolist()
 

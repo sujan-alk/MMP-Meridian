@@ -129,9 +129,11 @@ class QSwitch:
         }
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(self.config.alert_webhook_url, json=payload)  # type: ignore[arg-type]
+                resp = await client.post(self.config.alert_webhook_url, json=payload)  # type: ignore[arg-type]
+                resp.raise_for_status()
+            log.info("q_switch_alert_sent", exchange=self.exchange)
         except Exception as exc:
-            log.warning("q_switch_alert_failed", error=str(exc))
+            log.warning("q_switch_alert_failed", exchange=self.exchange, error=str(exc))
 
     @property
     def last_event(self) -> QSwitchEvent | None:

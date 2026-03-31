@@ -72,6 +72,7 @@ class RuntimeSettings(BaseSettings):
     bot_config_path: str = Field(default="bot.json")
     log_level: str = Field(default="INFO")
     alert_webhook_url: str | None = Field(default=None)
+    api_key: str | None = Field(default=None, description="X-API-Key required for control/config endpoints. Unset = no auth.")
 
 
 # ---------------------------------------------------------------------------

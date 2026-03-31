@@ -5,10 +5,11 @@ All routes depend on the Orchestrator being available via app.state.orchestrator
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from api.models import (
@@ -17,7 +18,7 @@ from api.models import (
 )
 from api.websocket import LiveFeed
 from config.schema import BotConfig
-from config.settings import save_bot_config
+from config.settings import save_bot_config, get_runtime_settings
 from db.queries import get_fills, get_orders, get_fill_rate, get_recent_pnl
 from utils.logging import get_logger
 from utils.time_utils import now_s
@@ -26,6 +27,13 @@ log = get_logger("routes")
 
 router = APIRouter()
 _start_time = time.time()
+
+
+def _require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    """Dependency that enforces X-API-Key auth when API_KEY is configured."""
+    configured = get_runtime_settings().api_key
+    if configured and x_api_key != configured:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def get_orchestrator(request: Request):
@@ -153,7 +161,7 @@ async def get_metrics(request: Request):
 # Control
 # ---------------------------------------------------------------------------
 
-@router.post("/api/control/pause", response_model=ControlResponse)
+@router.post("/api/control/pause", response_model=ControlResponse, dependencies=[Depends(_require_api_key)])
 async def pause_all(request: Request):
     orch = get_orchestrator(request)
     for bot in orch._bots.values():
@@ -161,7 +169,7 @@ async def pause_all(request: Request):
     return ControlResponse(success=True, message="All bots paused")
 
 
-@router.post("/api/control/resume", response_model=ControlResponse)
+@router.post("/api/control/resume", response_model=ControlResponse, dependencies=[Depends(_require_api_key)])
 async def resume_all(request: Request):
     orch = get_orchestrator(request)
     for bot in orch._bots.values():
@@ -170,14 +178,14 @@ async def resume_all(request: Request):
     return ControlResponse(success=True, message="All bots resumed")
 
 
-@router.post("/api/control/emergency_stop", response_model=ControlResponse)
+@router.post("/api/control/emergency_stop", response_model=ControlResponse, dependencies=[Depends(_require_api_key)])
 async def emergency_stop(request: Request):
     orch = get_orchestrator(request)
     await orch.emergency_stop_all("Emergency stop via API")
     return ControlResponse(success=True, message="Emergency stop executed on all exchanges")
 
 
-@router.post("/api/control/exchanges/{exchange}/pause", response_model=ControlResponse)
+@router.post("/api/control/exchanges/{exchange}/pause", response_model=ControlResponse, dependencies=[Depends(_require_api_key)])
 async def pause_exchange(request: Request, exchange: str):
     orch = get_orchestrator(request)
     bot = orch.get_bot(exchange)
@@ -187,7 +195,7 @@ async def pause_exchange(request: Request, exchange: str):
     return ControlResponse(success=True, message=f"{exchange} paused")
 
 
-@router.post("/api/control/exchanges/{exchange}/resume", response_model=ControlResponse)
+@router.post("/api/control/exchanges/{exchange}/resume", response_model=ControlResponse, dependencies=[Depends(_require_api_key)])
 async def resume_exchange(request: Request, exchange: str):
     orch = get_orchestrator(request)
     bot = orch.get_bot(exchange)
@@ -208,7 +216,7 @@ async def get_config(request: Request):
     return ConfigResponse(config=orch.config.model_dump())
 
 
-@router.put("/api/config", response_model=ConfigResponse)
+@router.put("/api/config", response_model=ConfigResponse, dependencies=[Depends(_require_api_key)])
 async def update_config(request: Request):
     """
     Update the meta config (spread, depth, volatility params).
@@ -235,7 +243,7 @@ async def update_config(request: Request):
     return ConfigResponse(config=new_config.model_dump(), message="Config updated and hot-reloaded")
 
 
-@router.put("/api/config/exchanges/{exchange}", response_model=ConfigResponse)
+@router.put("/api/config/exchanges/{exchange}", response_model=ConfigResponse, dependencies=[Depends(_require_api_key)])
 async def update_exchange_config(request: Request, exchange: str):
     """Update a single exchange's spread/depth/safety config."""
     orch = get_orchestrator(request)

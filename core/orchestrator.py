@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 log = get_logger("orchestrator")
 
 PRICE_LOOP_INTERVAL_S = 1.0
+CANDLE_FETCH_INTERVAL_S = 60.0  # Refresh 1-min candles for Zhang-Zhang vol every 60s
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ class Orchestrator:
         self._running = False
         self._state: GlobalState | None = None
         self._state_lock = asyncio.Lock()
+        self._last_candle_fetch_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -246,8 +248,18 @@ class Orchestrator:
             log.error("invalid_global_mid", value=global_mid)
             return
 
-        # Update volatility engine
+        # Update volatility engine — fetch candles for ZZ vol every 60s
         self.vol_engine.update_price(global_mid)
+        ts_now = now_s()
+        if ts_now - self._last_candle_fetch_at >= CANDLE_FETCH_INTERVAL_S and self._connectors:
+            primary = next(iter(self._connectors.values()))
+            try:
+                candles = await primary.fetch_candles(timeframe="1m", limit=15)
+                self.vol_engine.update_candles(candles)
+                self._last_candle_fetch_at = ts_now
+            except Exception as exc:
+                log.warning("candle_fetch_failed", error=str(exc))
+
         vol = self.vol_engine.rolling_vol()
         zz_vol, zz_regime = self.vol_engine.zhang_zhang_vol()
         agg = self.agg_model.compute(vol)

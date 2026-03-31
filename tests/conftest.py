@@ -201,6 +201,7 @@ def mock_connector():
     )
     connector.cancel_order.return_value = None
     connector.cancel_all_orders.return_value = None
+    connector.fetch_fills.return_value = []
     connector.connect.return_value = None
     connector.disconnect.return_value = None
     return connector

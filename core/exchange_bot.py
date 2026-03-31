@@ -27,7 +27,7 @@ from config.schema import ExchangeBotConfig
 from core.inventory_tracker import InventoryTracker
 from core.order_manager import OrderGrid, OrderManager
 from db.database import Database
-from db.queries import insert_inventory_snapshot, insert_rl_features, get_fill_rate, get_recent_pnl
+from db.queries import insert_fill, insert_inventory_snapshot, insert_rl_features, get_fill_rate, get_recent_pnl
 from exchange.base import BaseConnector, Balance
 from quant.aggressiveness import AggressivenessModel
 from quant.depth_engine import DepthEngine
@@ -48,6 +48,7 @@ log = get_logger("exchange_bot")
 BALANCE_CACHE_S = 10.0          # Re-fetch balance at most every 10 seconds
 SNAPSHOT_INTERVAL_S = 30.0      # Write inventory snapshot every 30 seconds
 RL_FEATURE_INTERVAL_S = 10.0    # Write RL features every 10 seconds
+FILL_POLL_INTERVAL_S = 5.0      # Poll exchange for fills every 5 seconds
 
 
 class ExchangeBot:
@@ -89,6 +90,8 @@ class ExchangeBot:
         self._balance_cached_at: float = 0.0
         self._last_snapshot_at: float = 0.0
         self._last_rl_at: float = 0.0
+        self._last_fill_poll_at: float = 0.0
+        self._last_fill_ts: float | None = None   # timestamp of most recent fill seen
         self._last_global_state: "GlobalState | None" = None
 
     # ------------------------------------------------------------------
@@ -131,6 +134,8 @@ class ExchangeBot:
                 break
             except Exception as exc:
                 log.error("exchange_bot_tick_error", exchange=self.exchange, error=str(exc), exc_info=True)
+                if not self.connector.is_connected:
+                    await self._try_reconnect()
 
     async def _tick(self, state: "GlobalState") -> None:
         """Process one tick: update quant model + manage orders."""
@@ -161,11 +166,7 @@ class ExchangeBot:
             state.volatility, state.zz_regime
         )
 
-        # Compute buy spreads using buy aggressiveness, sell spreads using sell aggressiveness.
-        # compute_levels() applies the same agg to both sides, so we call it separately
-        # and extract the correct side from each call.
-        buy_spreads, _ = self.spread_engine.compute_levels(buy_agg, n)
-        _, sell_spreads = self.spread_engine.compute_levels(sell_agg, n)
+        buy_spreads, sell_spreads = self.spread_engine.compute_levels_dual(buy_agg, sell_agg, n)
 
         buy_prices, sell_prices = self.spread_engine.prices_from_spreads(
             state.global_mid, buy_spreads, sell_spreads
@@ -195,8 +196,13 @@ class ExchangeBot:
         # 5. Diff-and-repost orders
         placed = await self.order_manager.diff_and_repost(grid)
 
-        # 6. Periodic DB writes
+        # 6. Poll for fills periodically
         ts = now_s()
+        if ts - self._last_fill_poll_at >= FILL_POLL_INTERVAL_S:
+            await self._ingest_fills()
+            self._last_fill_poll_at = ts
+
+        # 7. Periodic DB writes
         if ts - self._last_snapshot_at >= SNAPSHOT_INTERVAL_S:
             await insert_inventory_snapshot(
                 self.db, self.exchange, balance.usd, balance.token,
@@ -222,12 +228,6 @@ class ExchangeBot:
             )
             self._last_rl_at = ts
 
-        # 7. Check fills every 5 ticks (~5 seconds)
-        self._fill_tick_counter += 1
-        if self._fill_tick_counter >= 5:
-            self._fill_tick_counter = 0
-            await self._check_fills()
-
         # 8. Emit WebSocket event
         await self.live_feed.emit_tick(
             exchange=self.exchange,
@@ -242,35 +242,6 @@ class ExchangeBot:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    async def _check_fills(self) -> None:
-        """Fetch recent trades and persist new fills to DB."""
-        try:
-            await self.rate_limiter.acquire()
-            trades = await self.connector.fetch_my_trades(
-                self.config.symbol, since=int(self._last_fill_ts)
-            )
-            for t in trades:
-                fill = Fill(
-                    id=t.get("id", ""),
-                    order_id=t.get("order", ""),
-                    exchange=self.exchange,
-                    symbol=t.get("symbol", self.config.symbol),
-                    side=t.get("side", ""),
-                    filled_price=float(t.get("price", 0)),
-                    filled_amount=float(t.get("amount", 0)),
-                    fee=float(t.get("fee", {}).get("cost", 0)) if t.get("fee") else 0.0,
-                    fee_currency=t.get("fee", {}).get("currency", "") if t.get("fee") else "",
-                    timestamp=float(t.get("timestamp", now_s() * 1000)) / 1000,
-                )
-                await insert_fill(self.db, fill)
-                ts = float(t.get("timestamp", 0))
-                if ts > self._last_fill_ts:
-                    self._last_fill_ts = ts
-            if trades:
-                log.info("fills_recorded", exchange=self.exchange, count=len(trades))
-        except Exception as exc:
-            log.warning("check_fills_failed", exchange=self.exchange, error=str(exc))
 
     async def _warmup(self) -> None:
         """Fetch initial balance and set up inventory baseline."""
@@ -307,6 +278,33 @@ class ExchangeBot:
                 log.warning("fetch_balance_failed", exchange=self.exchange, error=str(exc))
                 return self._balance  # Return stale if we have it
         return self._balance
+
+    async def _ingest_fills(self) -> None:
+        """Fetch recent fills from the exchange and persist them to the database."""
+        since = (self._last_fill_ts + 0.001) if self._last_fill_ts is not None else (now_s() - 3600.0)
+        try:
+            await self.rate_limiter.acquire()
+            fills = await self.connector.fetch_fills(since_ts=since)
+        except Exception as exc:
+            log.warning("fill_ingestion_failed", exchange=self.exchange, error=str(exc))
+            return
+        for fill in fills:
+            await insert_fill(self.db, fill)
+            if self._last_fill_ts is None or fill.timestamp > self._last_fill_ts:
+                self._last_fill_ts = fill.timestamp
+        if fills:
+            log.info("fills_ingested", exchange=self.exchange, count=len(fills))
+
+    async def _try_reconnect(self) -> None:
+        """Attempt to reconnect after a connection drop. Triggers Q-Switch if it fails."""
+        log.warning("exchange_bot_reconnecting", exchange=self.exchange)
+        try:
+            await self.connector.reconnect()
+            log.info("exchange_bot_reconnected", exchange=self.exchange)
+        except Exception as exc:
+            log.error("exchange_bot_reconnect_failed", exchange=self.exchange, error=str(exc))
+            self._running = False
+            self.q_switch.trigger_manually("Reconnect failed — manual review required")
 
     async def _emergency_stop(self) -> None:
         """Called by heartbeat monitor on failure."""

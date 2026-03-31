@@ -175,6 +175,26 @@ class CCXTConnector(BaseConnector):
         raw_orders = await _retry(self._exchange.fetch_open_orders, self.symbol)
         return [self._parse_order(o) for o in raw_orders]
 
+    async def fetch_fills(self, since_ts: float | None = None, limit: int = 100) -> list[Fill]:
+        since_ms = int(since_ts * 1000) if since_ts is not None else None
+        try:
+            raw = await _retry(self._exchange.fetch_my_trades, self.symbol, since_ms, limit=limit)
+        except ccxt.NotSupported:
+            log.debug("fetch_fills_not_supported", exchange=self.exchange_name)
+            return []
+        return [self._parse_fill(t) for t in raw]
+
+    async def reconnect(self) -> None:
+        """Re-establish the exchange connection after a drop."""
+        log.warning("connector_reconnecting", exchange=self.exchange_name)
+        self._connected = False
+        try:
+            await self._exchange.close()
+        except Exception:
+            pass
+        await asyncio.sleep(2.0)
+        await self.connect()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -196,4 +216,18 @@ class CCXTConnector(BaseConnector):
             filled_price=float(raw.get("average") or 0),
             fee=float((raw.get("fee") or {}).get("cost") or 0),
             fee_currency=str((raw.get("fee") or {}).get("currency") or ""),
+        )
+
+    def _parse_fill(self, raw: dict) -> Fill:
+        return Fill(
+            id=str(raw["id"]),
+            order_id=str(raw.get("order") or ""),
+            exchange=self.exchange_name,
+            symbol=self.symbol,
+            side=raw["side"],
+            filled_price=float(raw.get("price") or 0),
+            filled_amount=float(raw.get("amount") or 0),
+            fee=float((raw.get("fee") or {}).get("cost") or 0),
+            fee_currency=str((raw.get("fee") or {}).get("currency") or ""),
+            timestamp=raw["timestamp"] / 1000.0 if raw.get("timestamp") else time.time(),
         )

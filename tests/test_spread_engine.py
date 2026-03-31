@@ -88,37 +88,30 @@ class TestComputeLevels:
 class TestAggressivenessEffect:
     """Tests that aggressiveness correctly controls level clustering."""
 
-    def test_high_agg_clusters_near_widest_end(self, spread_config):
+    def test_high_agg_clusters_near_tightest_end(self, spread_config):
         """
-        At agg=1.0, gamma = exp(-curve_strength) ≈ 0.018.
-        With gamma < 1, t^gamma rises quickly → levels jump to the wide end fast.
-        The interpolation goes tightest → widest, so most levels end up near widest.
-        This is counterintuitive but matches the code: compute_side_levels
-        maps level 0 = tightest, and the power curve pushes values toward widest
-        when gamma < 1. The REAL clustering happens because the SELL side uses
-        sell_agg independently, and the spread range is asymmetric.
+        At agg=1.0, gamma = exp(+curve_strength) ≈ 54.6.
+        With gamma >> 1, t^gamma stays near 0 for most t, so most levels
+        cluster near the tightest value (buy_max_pct = -0.1%).
+        This matches the intent: low volatility → aggressive → tight spreads.
+        """
+        engine = SpreadEngine(spread_config)
+        buy, _ = engine.compute_levels(aggressiveness=1.0, n_levels=15)
+        median_buy = sorted(buy)[len(buy) // 2]
+        assert median_buy > -1.0, f"Median buy {median_buy} should be near tightest at high agg"
+
+    def test_low_agg_clusters_near_widest_end(self, spread_config):
+        """
+        At agg=0.0, gamma = exp(-curve_strength) ≈ 0.018.
+        With gamma < 1, t^gamma rises quickly → most levels jump toward widest.
+        This matches the intent: high volatility → passive → wide spreads.
         """
         engine = SpreadEngine(spread_config)
         buy_high, _ = engine.compute_levels(aggressiveness=1.0, n_levels=15)
         buy_low, _ = engine.compute_levels(aggressiveness=0.0, n_levels=15)
-        # At high agg (gamma<1): levels spread out quickly toward widest
-        # At low agg (gamma>1): levels cluster near tightest (level 0)
-        # So the median at high agg should be more negative (closer to widest)
         med_high = sorted(buy_high)[len(buy_high) // 2]
         med_low = sorted(buy_low)[len(buy_low) // 2]
-        assert med_high < med_low, "High agg should push median toward widest"
-
-    def test_low_agg_clusters_near_tightest_end(self, spread_config):
-        """
-        At agg=0.0, gamma = exp(curve_strength) ≈ 54.6.
-        With gamma >> 1, t^gamma stays near 0 for most of the range,
-        so most levels cluster near the tightest value (level 0 = buy_max_pct).
-        """
-        engine = SpreadEngine(spread_config)
-        buy, _ = engine.compute_levels(aggressiveness=0.0, n_levels=15)
-        # Most levels should be near -0.1 (tightest)
-        median_buy = sorted(buy)[len(buy) // 2]
-        assert median_buy > -1.0, f"Median buy {median_buy} should be near tightest at low agg"
+        assert med_low < med_high, "Low agg should push median toward widest"
 
     def test_mid_agg_is_approximately_linear(self, spread_config):
         """At agg=0.5, levels should be approximately evenly spaced (gamma≈1)."""

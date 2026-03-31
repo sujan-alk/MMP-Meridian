@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+from pathlib import Path
 
 import uvicorn
 
@@ -35,6 +36,16 @@ async def main() -> None:
     log.info("alkimi_mm_bot_starting", live_mode=settings.live_mode)
 
     if settings.live_mode:
+        gate_file = Path(".enable_live_mode")
+        if not gate_file.exists():
+            log.error(
+                "LIVE_MODE_BLOCKED",
+                msg=(
+                    "LIVE_MODE=true but the gate file '.enable_live_mode' does not exist. "
+                    "Create it in the working directory to confirm you intend to place real orders."
+                ),
+            )
+            sys.exit(1)
         log.warning(
             "LIVE_MODE_ENABLED",
             msg="Bot will place REAL orders. Ensure credentials and config are correct.",

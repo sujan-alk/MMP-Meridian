@@ -139,5 +139,13 @@ class BaseConnector(ABC):
     async def fetch_open_orders(self) -> list[Order]:
         """Return all currently open orders for self.symbol."""
 
+    @abstractmethod
+    async def fetch_fills(self, since_ts: float | None = None, limit: int = 100) -> list[Fill]:
+        """
+        Return recent fills (executed trades) since the given Unix timestamp.
+        Returns an empty list if the exchange does not support this endpoint.
+        since_ts: Unix seconds; fetch only fills at or after this time.
+        """
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} exchange={self.exchange_name} symbol={self.symbol}>"

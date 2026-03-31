@@ -104,11 +104,35 @@ class SpreadEngine:
           - agg=1 → gamma = exp(-curve_strength) → shallow curve, tight clustering
           - agg=0.5 → gamma = 1 → linear (even spacing)
         """
-        gamma = np.exp(self.cfg.curve_strength * (1.0 - 2.0 * agg))
+        gamma = np.exp(self.cfg.curve_strength * (2.0 * agg - 1.0))
         t = np.linspace(0.0, 1.0, n)
         # Level 0 = tightest, level n-1 = widest
         levels = tightest + (widest - tightest) * (t ** gamma)
         return levels.tolist()
+
+    def compute_levels_dual(
+        self,
+        buy_aggressiveness: float,
+        sell_aggressiveness: float,
+        n_levels: int,
+    ) -> tuple[list[float], list[float]]:
+        """
+        Compute buy and sell spread levels using independent aggressiveness values per side.
+        Use this instead of compute_levels() when buy/sell aggressiveness differ (e.g. ZZ regime).
+        """
+        buy = self._compute_side_levels(
+            tightest=self.cfg.buy_max_pct,
+            widest=self.cfg.buy_min_pct,
+            agg=clip(buy_aggressiveness, 0.0, 1.0),
+            n=n_levels,
+        )
+        sell = self._compute_side_levels(
+            tightest=self.cfg.sell_min_pct,
+            widest=self.cfg.sell_max_pct,
+            agg=clip(sell_aggressiveness, 0.0, 1.0),
+            n=n_levels,
+        )
+        return buy, sell
 
     def prices_from_spreads(
         self,
