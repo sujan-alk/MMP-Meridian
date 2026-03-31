@@ -79,6 +79,10 @@ class DepthEngine:
         # Apply minimum order size
         amounts = np.maximum(raw_amounts, self.cfg.min_order_usd)
 
+        # Renormalize to respect side budget after min_order_usd clamp
+        if amounts.sum() > 0:
+            amounts = amounts * (side_budget / amounts.sum())
+
         return amounts.tolist()
 
     def usd_to_token_amount(self, usd_amount: float, price: float) -> float:

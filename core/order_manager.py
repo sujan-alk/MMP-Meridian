@@ -65,6 +65,7 @@ class OrderManager:
         self.dry_run = not live_mode  # overridden by global dry_run setting
         self._open_orders: dict[str, Order] = {}  # id → Order (in-memory cache)
         self._last_grid: OrderGrid | None = None
+        self._market_info: dict | None = None  # cached market constraints
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -204,9 +205,39 @@ class OrderManager:
         self._open_orders.pop(order.id, None)
         await update_order_status(self.db, order.id, "canceled")
 
+    def _get_market_info(self) -> dict | None:
+        """Cache and return market info for the symbol."""
+        if self._market_info is not None:
+            return self._market_info
+        markets = getattr(self.connector, "markets", None)
+        if markets and self.config.symbol in markets:
+            self._market_info = markets[self.config.symbol]
+        return self._market_info
+
     async def _place_one(self, side: str, price: float, token_amount: float) -> Order | None:
         if token_amount <= 0 or price <= 0:
             return None
+
+        # Validate exchange constraints
+        market = self._get_market_info()
+        if market:
+            limits = market.get("limits", {})
+            min_amount = (limits.get("amount") or {}).get("min")
+            if min_amount and token_amount < min_amount:
+                log.debug(
+                    "order_below_minimum",
+                    exchange=self.config.exchange,
+                    amount=token_amount,
+                    min_amount=min_amount,
+                )
+                return None
+            # Round to exchange precision
+            try:
+                token_amount = float(self.connector.amount_to_precision(self.config.symbol, token_amount))
+                price = float(self.connector.price_to_precision(self.config.symbol, price))
+            except Exception:
+                pass  # fall through with original values
+
         await self.rate_limiter.acquire()
 
         if self.dry_run:

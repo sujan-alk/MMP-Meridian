@@ -47,7 +47,7 @@ class InventoryTracker:
     that the DepthEngine uses to bias buy/sell order sizes.
     """
 
-    def __init__(self, config: ExchangeBotConfig):
+    def __init__(self, config: ExchangeBotConfig, max_position_tokens: float = 0.0, max_position_usd: float = 0.0, min_position_tokens: float = 0.0):
         self.config = config
         self.exchange = config.exchange
         self._initial_usd: Optional[float] = None
@@ -55,6 +55,9 @@ class InventoryTracker:
         self._current_usd: float = 0.0
         self._current_token: float = 0.0
         self._drift_threshold: float = 0.10  # 10% drift triggers meaningful skew
+        self.max_position_tokens = max_position_tokens
+        self.max_position_usd = max_position_usd
+        self.min_position_tokens = min_position_tokens
 
     def record_initial(self, balance: Balance) -> None:
         """
@@ -126,6 +129,31 @@ class InventoryTracker:
             return False
         token_drift = abs(self._current_token - self._initial_token) / self._initial_token
         return token_drift >= self._drift_threshold
+
+    def is_position_limit_reached(self, side: str, current_tokens: float, token_price: float) -> bool:
+        """
+        Check if position limits would be breached.
+
+        Args:
+            side: "buy" or "sell"
+            current_tokens: current token balance
+            token_price: current token price in USD
+
+        Returns:
+            True if the position limit for the given side is reached.
+        """
+        if self.max_position_usd <= 0 and self.max_position_tokens <= 0:
+            return False  # No limits configured
+
+        position_usd = current_tokens * token_price
+
+        if side == "buy" and self.max_position_usd > 0 and position_usd >= self.max_position_usd:
+            log.warning("position_limit_reached", side=side, position_usd=position_usd, max_usd=self.max_position_usd)
+            return True
+        if side == "sell" and self.min_position_tokens > 0 and current_tokens <= self.min_position_tokens:
+            log.warning("position_limit_reached", side=side, current_tokens=current_tokens, min_tokens=self.min_position_tokens)
+            return True
+        return False
 
     def set_initial_from_config(self, usd: float, token: float) -> None:
         """Override the auto-detected initial balance with configured values."""

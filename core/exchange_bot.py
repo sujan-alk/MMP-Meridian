@@ -221,7 +221,13 @@ class ExchangeBot:
             )
             self._last_rl_at = ts
 
-        # 7. Emit WebSocket event
+        # 7. Check fills every 5 ticks (~5 seconds)
+        self._fill_tick_counter += 1
+        if self._fill_tick_counter >= 5:
+            self._fill_tick_counter = 0
+            await self._check_fills()
+
+        # 8. Emit WebSocket event
         await self.live_feed.emit_tick(
             exchange=self.exchange,
             global_mid=state.global_mid,
@@ -235,6 +241,35 @@ class ExchangeBot:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _check_fills(self) -> None:
+        """Fetch recent trades and persist new fills to DB."""
+        try:
+            await self.rate_limiter.acquire()
+            trades = await self.connector.fetch_my_trades(
+                self.config.symbol, since=int(self._last_fill_ts)
+            )
+            for t in trades:
+                fill = Fill(
+                    id=t.get("id", ""),
+                    order_id=t.get("order", ""),
+                    exchange=self.exchange,
+                    symbol=t.get("symbol", self.config.symbol),
+                    side=t.get("side", ""),
+                    filled_price=float(t.get("price", 0)),
+                    filled_amount=float(t.get("amount", 0)),
+                    fee=float(t.get("fee", {}).get("cost", 0)) if t.get("fee") else 0.0,
+                    fee_currency=t.get("fee", {}).get("currency", "") if t.get("fee") else "",
+                    timestamp=float(t.get("timestamp", now_s() * 1000)) / 1000,
+                )
+                await insert_fill(self.db, fill)
+                ts = float(t.get("timestamp", 0))
+                if ts > self._last_fill_ts:
+                    self._last_fill_ts = ts
+            if trades:
+                log.info("fills_recorded", exchange=self.exchange, count=len(trades))
+        except Exception as exc:
+            log.warning("check_fills_failed", exchange=self.exchange, error=str(exc))
 
     async def _warmup(self) -> None:
         """Fetch initial balance and set up inventory baseline."""

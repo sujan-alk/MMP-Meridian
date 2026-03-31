@@ -30,7 +30,7 @@ async def insert_order(db: Database, order: Order) -> None:
             order.status, order.timestamp, now_s(),
         ),
     )
-    await db.conn.commit()
+    await db.commit_unless_batching()
 
 
 async def update_order_status(db: Database, order_id: str, status: str) -> None:
@@ -38,7 +38,7 @@ async def update_order_status(db: Database, order_id: str, status: str) -> None:
         "UPDATE orders SET status = ?, updated_at = ? WHERE id = ?",
         (status, now_s(), order_id),
     )
-    await db.conn.commit()
+    await db.commit_unless_batching()
 
 
 async def get_open_orders(db: Database, exchange: str) -> list[dict]:
@@ -83,7 +83,7 @@ async def insert_fill(db: Database, fill: Fill, pnl_usd: float | None = None) ->
             fill.timestamp, pnl_usd,
         ),
     )
-    await db.conn.commit()
+    await db.commit_unless_batching()
 
 
 async def get_fills(
@@ -131,7 +131,7 @@ async def insert_inventory_snapshot(
         """,
         (exchange, usd, token, global_mid, volatility, aggressiveness, skew_factor, now_s()),
     )
-    await db.conn.commit()
+    await db.commit_unless_batching()
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ async def insert_rl_features(
             buy_spread_l1, sell_spread_l1, skew_factor, fill_rate_1m, pnl_1h,
         ),
     )
-    await db.conn.commit()
+    await db.commit_unless_batching()
 
 
 async def get_recent_pnl(db: Database, window_s: float = 3600.0) -> float:
