@@ -56,6 +56,7 @@ class OrderManager:
         db: Database,
         rate_limiter: RateLimiter,
         live_mode: bool = False,
+        max_order_age_seconds: float = 300.0,
     ):
         self.connector = connector
         self.config = config
@@ -64,8 +65,9 @@ class OrderManager:
         self.live_mode = live_mode
         self.dry_run = not live_mode  # overridden by global dry_run setting
         self._open_orders: dict[str, Order] = {}  # id → Order (in-memory cache)
+        self._order_created_at: dict[str, float] = {}  # id → creation timestamp
         self._last_grid: OrderGrid | None = None
-        self._market_info: dict | None = None  # cached market constraints
+        self.max_order_age_seconds = max_order_age_seconds
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -80,6 +82,9 @@ class OrderManager:
         """
         # Sync in-memory cache with exchange
         await self._sync_open_orders()
+
+        # Cancel aged-out orders
+        await self._cancel_stale_by_age()
 
         to_cancel = self._find_stale_orders(grid)
         to_place = self._find_missing_levels(grid)
@@ -125,6 +130,7 @@ class OrderManager:
         for order_id in list(self._open_orders.keys()):
             await update_order_status(self.db, order_id, "canceled")
         self._open_orders.clear()
+        self._order_created_at.clear()
 
     # ------------------------------------------------------------------
     # Order comparison logic
@@ -198,46 +204,39 @@ class OrderManager:
         except Exception as exc:
             log.warning("sync_open_orders_failed", exchange=self.config.exchange, error=str(exc))
 
+    async def _cancel_stale_by_age(self) -> None:
+        """Cancel orders that have been open longer than max_order_age_seconds."""
+        if self.max_order_age_seconds <= 0:
+            return
+        current_time = now_s()
+        stale_ids = [
+            oid for oid, created_at in self._order_created_at.items()
+            if current_time - created_at > self.max_order_age_seconds
+            and oid in self._open_orders
+        ]
+        if stale_ids:
+            log.info(
+                "cancelling_stale_orders",
+                exchange=self.config.exchange,
+                count=len(stale_ids),
+                max_age_s=self.max_order_age_seconds,
+            )
+        for oid in stale_ids:
+            order = self._open_orders.get(oid)
+            if order:
+                await self._cancel_one(order)
+
     async def _cancel_one(self, order: Order) -> None:
         await self.rate_limiter.acquire()
         if not self.dry_run:
             await self.connector.cancel_order(order.id)
         self._open_orders.pop(order.id, None)
+        self._order_created_at.pop(order.id, None)
         await update_order_status(self.db, order.id, "canceled")
-
-    def _get_market_info(self) -> dict | None:
-        """Cache and return market info for the symbol."""
-        if self._market_info is not None:
-            return self._market_info
-        markets = getattr(self.connector, "markets", None)
-        if markets and self.config.symbol in markets:
-            self._market_info = markets[self.config.symbol]
-        return self._market_info
 
     async def _place_one(self, side: str, price: float, token_amount: float) -> Order | None:
         if token_amount <= 0 or price <= 0:
             return None
-
-        # Validate exchange constraints
-        market = self._get_market_info()
-        if market:
-            limits = market.get("limits", {})
-            min_amount = (limits.get("amount") or {}).get("min")
-            if min_amount and token_amount < min_amount:
-                log.debug(
-                    "order_below_minimum",
-                    exchange=self.config.exchange,
-                    amount=token_amount,
-                    min_amount=min_amount,
-                )
-                return None
-            # Round to exchange precision
-            try:
-                token_amount = float(self.connector.amount_to_precision(self.config.symbol, token_amount))
-                price = float(self.connector.price_to_precision(self.config.symbol, price))
-            except Exception:
-                pass  # fall through with original values
-
         await self.rate_limiter.acquire()
 
         if self.dry_run:
@@ -254,12 +253,14 @@ class OrderManager:
                 timestamp=now_s(),
             )
             self._open_orders[fake_order.id] = fake_order
+            self._order_created_at[fake_order.id] = now_s()
             await insert_order(self.db, fake_order)
             return fake_order
 
         try:
             order = await self.connector.create_limit_order(side, price, token_amount)
             self._open_orders[order.id] = order
+            self._order_created_at[order.id] = now_s()
             await insert_order(self.db, order)
             return order
         except Exception as exc:

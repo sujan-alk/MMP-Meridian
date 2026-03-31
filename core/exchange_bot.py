@@ -161,10 +161,11 @@ class ExchangeBot:
             state.volatility, state.zz_regime
         )
 
-        buy_spreads, sell_spreads = self.spread_engine.compute_levels(buy_agg, n)
-        # Note: sell side uses sell_agg for spread; depth uses averaged aggressiveness
-        _, sell_spreads_v = self.spread_engine.compute_levels(sell_agg, n)
-        sell_spreads = sell_spreads_v
+        # Compute buy spreads using buy aggressiveness, sell spreads using sell aggressiveness.
+        # compute_levels() applies the same agg to both sides, so we call it separately
+        # and extract the correct side from each call.
+        buy_spreads, _ = self.spread_engine.compute_levels(buy_agg, n)
+        _, sell_spreads = self.spread_engine.compute_levels(sell_agg, n)
 
         buy_prices, sell_prices = self.spread_engine.prices_from_spreads(
             state.global_mid, buy_spreads, sell_spreads

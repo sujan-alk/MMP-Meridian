@@ -32,8 +32,11 @@ class SpreadEngine:
     Direct Python translation of Huy's Meta Config V1 spread model.
     """
 
-    def __init__(self, config: SpreadConfig):
+    def __init__(self, config: SpreadConfig, maker_fee_bps: float = 0.0):
         self.cfg = config
+        self.maker_fee_bps = maker_fee_bps
+        # Minimum profitable spread: must cover maker fees on both sides + buffer
+        self.min_profitable_spread_bps = maker_fee_bps * 2 + 2
 
     def compute_levels(
         self,
@@ -67,6 +70,18 @@ class SpreadEngine:
             agg=agg,
             n=n_levels,
         )
+
+        # Enforce minimum profitable spread:
+        # The total spread (sell[0] - buy[0]) must be >= min_profitable_spread_bps / 100
+        if self.min_profitable_spread_bps > 0 and buy and sell:
+            total_spread_pct = sell[0] - buy[0]  # buy is negative, sell is positive
+            min_spread_pct = self.min_profitable_spread_bps / 100.0
+            if total_spread_pct < min_spread_pct:
+                # Widen symmetrically to reach minimum profitable spread
+                deficit = min_spread_pct - total_spread_pct
+                buy[0] -= deficit / 2.0
+                sell[0] += deficit / 2.0
+
         return buy, sell
 
     def _compute_side_levels(
