@@ -131,11 +131,14 @@ class VolatilityEngine:
         zz_vol = math.sqrt(max(zz_variance, 0.0))
 
         net = float(np.mean(net_co))
-        threshold = 0.0015  # 0.15% mean candle direction to call a trend
-        if net > threshold:
+        trending_threshold = getattr(self.cfg, 'trending_threshold', 0.0015)
+        choppy_threshold = getattr(self.cfg, 'choppy_threshold', 0.0005)
+        if net > trending_threshold:
             regime = "trending_up"
-        elif net < -threshold:
+        elif net < -trending_threshold:
             regime = "trending_down"
+        elif abs(net) < choppy_threshold:
+            regime = "choppy"
         else:
             regime = "choppy"
 

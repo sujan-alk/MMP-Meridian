@@ -59,6 +59,14 @@ class VolatilityConfig(BaseModel):
         default=2.0, ge=1.0, le=5.0,
         description="Curve power: 1=linear, 2=quadratic, 3=cubic"
     )
+    trending_threshold: float = Field(
+        default=0.0015, gt=0,
+        description="Mean candle direction above this → trending regime"
+    )
+    choppy_threshold: float = Field(
+        default=0.0005, ge=0,
+        description="Mean candle direction below this → choppy regime"
+    )
 
     @field_validator("high_threshold")
     @classmethod
