@@ -70,6 +70,7 @@ class Fill:
     fee: float
     fee_currency: str
     timestamp: float
+    pnl_usd: float = 0.0
 
 
 # ---------------------------------------------------------------------------
