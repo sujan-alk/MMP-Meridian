@@ -10,7 +10,8 @@ Step-by-step instructions for deploying the ALKIMI MM Bot on Railway.
 - A [Railway](https://railway.app) account
 - Railway CLI: `npm install -g @railway/cli`
 - GitHub repository linked to Railway
-- Exchange API keys for KuCoin, Gate.io, MEXC, and Kraken
+- Exchange API keys for one or more of: KuCoin, Gate.io, MEXC, Kraken, Binance
+- A [Supabase](https://supabase.com) project (free tier is sufficient)
 
 ---
 
@@ -33,16 +34,31 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Set Up Supabase
+
+The bot uses Supabase (PostgreSQL) for persistent storage of orders, fills, inventory snapshots, and RL training features.
+
+1. Go to [supabase.com](https://supabase.com) and create a new project (or use an existing one)
+2. Once the project is ready, go to **Settings > Database**
+3. Under **Connection string**, copy the **URI** format connection string
+   - It looks like: `postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-REF].supabase.co:5432/postgres`
+   - Replace `[YOUR-PASSWORD]` with the database password you set when creating the project
+4. You do **not** need to create any tables manually — the bot auto-creates all tables and indexes on first startup
+
+> **Tip:** The free tier provides 500 MB storage and 2 GB bandwidth, which is more than enough. The bot generates roughly 10 MB/day of data.
+
 ### Configure
 
 ```bash
 # Copy the example env
 cp .env.example .env
 
-# Edit .env — add your exchange API keys
+# Edit .env — add your exchange API keys and Supabase connection string
 # Leave LIVE_MODE=false for now
 nano .env
 ```
+
+Set your `SUPABASE_DB_URL` to the connection string from step 3 above.
 
 ### Verify config
 
@@ -59,6 +75,8 @@ python3 main.py
 Open `http://localhost:8000/health` — should return `{"status":"ok"}`.
 
 Open `http://localhost:8000/docs` to explore the API.
+
+Open `http://localhost:8000/static/index.html` to view the **live web dashboard** — a real-time UI showing per-exchange cards with mid-price, volatility, aggressiveness, regime, skew, and intended order grids.
 
 Watch the WebSocket:
 ```bash
@@ -85,16 +103,9 @@ railway link
 railway init
 ```
 
-### 2.2 Add a Persistent Volume
+### 2.2 Set Environment Variables
 
-The SQLite database must persist across deploys. Add a Railway volume:
-
-1. In Railway dashboard → your service → **Volumes**
-2. Add a volume:
-   - **Mount path**: `/app/data`
-3. Set `DB_PATH=/app/data/mm_bot.db` in environment variables
-
-### 2.3 Set Environment Variables
+The database is hosted on Supabase, so no Railway volume is needed.
 
 In Railway dashboard → your service → **Variables**, add all variables from `.env.example`:
 
@@ -108,17 +119,19 @@ MEXC_API_KEY=...
 MEXC_API_SECRET=...
 KRAKEN_API_KEY=...
 KRAKEN_API_SECRET=...
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
 
 LIVE_MODE=false
 PORT=8000
-DB_PATH=/app/data/mm_bot.db
+SUPABASE_DB_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT.supabase.co:5432/postgres
 LOG_LEVEL=INFO
 ALERT_WEBHOOK_URL=
 ```
 
 > **Never set `LIVE_MODE=true` until you have verified the bot is working correctly in dry-run mode on Railway.**
 
-### 2.4 Verify `railway.json`
+### 2.3 Verify `railway.json`
 
 The repo includes a `railway.json` — verify it looks correct:
 
@@ -305,17 +318,20 @@ curl "https://your-app.railway.app/api/fills?limit=50"
 
 ---
 
-## 7. Database Backup
+## 7. Database
 
-The SQLite database at `/app/data/mm_bot.db` is stored on the Railway volume. To back it up:
+The database is hosted on Supabase (PostgreSQL). No Railway volume is required.
 
-```bash
-# Download via Railway CLI
-railway run -- cp /app/data/mm_bot.db /tmp/mm_bot_backup.db
-# Then use railway shell or similar to retrieve it
-```
+### Backup
 
-Or query it directly via the API endpoints (`/api/fills`, `/api/orders`, `/api/metrics`).
+Supabase provides automatic daily backups on paid plans. You can also:
+
+- Use the Supabase Dashboard → **SQL Editor** to run queries directly
+- Query data via the bot's API endpoints (`/api/fills`, `/api/orders`, `/api/metrics`)
+- Export data via `pg_dump` using your `SUPABASE_DB_URL` connection string:
+  ```bash
+  pg_dump "$SUPABASE_DB_URL" --data-only > backup.sql
+  ```
 
 ---
 
@@ -367,12 +383,12 @@ Daily loss or drawdown exceeded threshold. Review:
 2. Reduce `max_requests_per_second` in `bot.json → safety`
 3. CCXT rate limiting should handle this automatically, but lower the limit if needed
 
-### Database missing after redeploy
+### Database connection failed
 
-Volume wasn't mounted correctly. Verify:
-1. Railway volume is attached with mount path `/app/data`
-2. `DB_PATH=/app/data/mm_bot.db` is set in env vars
-3. Volume persists between deploys (check Railway volumes tab)
+1. Verify `SUPABASE_DB_URL` is set correctly in Railway variables
+2. Check the Supabase project is active (not paused due to inactivity on free tier)
+3. Confirm the password in the connection string is correct
+4. Check Supabase Dashboard → **Settings > Database** for the correct connection string
 
 ---
 
@@ -384,7 +400,9 @@ Railway's free tier may not be sufficient for production. Recommended:
 |----------|-------------|-------|
 | RAM | 512MB | Python asyncio is lightweight; 256MB minimum |
 | CPU | 0.5 vCPU | I/O bound; minimal CPU needed |
-| Disk | 1GB volume | SQLite DB grows ~10MB/day with rl_features |
-| Network | Unlimited | 4 exchanges × ~1 req/s each |
+| Network | Unlimited | 4 exchanges × ~1 req/s each + Supabase writes |
+
+No Railway volume is needed — the database is hosted on Supabase.
 
 Typical Railway plan: **Hobby** ($5/mo) or **Pro** for production use.
+Typical Supabase plan: **Free** tier (500 MB) is sufficient for months of operation.

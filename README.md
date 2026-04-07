@@ -1,6 +1,6 @@
 # Alkimi MM Platform
 
-A production-ready automated market-making bot for the ALKIMI token, operating simultaneously across KuCoin, Gate.io, MEXC, and Kraken using an async Python architecture with advanced quantitative pricing models and multi-layered risk management.
+A production-ready automated market-making bot for the ALKIMI token, operating simultaneously across KuCoin, Gate.io, MEXC, Kraken, and Binance using an async Python architecture with advanced quantitative pricing models and multi-layered risk management.
 
 ## Table of Contents
 
@@ -32,15 +32,20 @@ Key design principles:
 
 ## Features
 
-- Simultaneous market making on **KuCoin, Gate.io, MEXC, and Kraken**
+- Simultaneous market making on **KuCoin, Gate.io, MEXC, Kraken, and Binance**
 - **Weighted global mid-price** computed from all active exchanges every second
 - **Huy's Meta Config V1** spread engine — power-curve interpolation maps volatility to spread levels
+- **Per-side spread control** — independent buy/sell level counts, curve strengths, and minimum step enforcement
+- **Base aggressiveness scaling** — user-configurable ceiling for aggressiveness (e.g. 0.4 = scale to 40%)
+- **Tick-size price rounding** — prices rounded to exchange tick size for precision
+- **Depth min-step enforcement** — minimum USD decrement between consecutive order levels
 - **Zhang-Zhang (2018) OHLCV volatility estimator** with regime detection (trending up/down/choppy)
 - **Inventory-aware skew factor** — automatically increases buy or sell depth when token holdings drift
 - **Multi-layer safety**: Q-Switch emergency stop, circuit breaker (daily P&L/drawdown), heartbeat monitor, rate limiter
+- **Live web dashboard** at `/static/index.html` — real-time exchange cards with mid, vol, aggressiveness, regime, and order grids
 - **REST + WebSocket API** (FastAPI) for monitoring, control, and real-time event streaming
 - **Structured JSON logging** via structlog (coloured in dev, JSON in production)
-- **Async SQLite** (aiosqlite) with WAL mode for persistent order, fill, and metrics history
+- **Supabase PostgreSQL** for persistent order, fill, and metrics history
 - **RL agent scaffold** — Phase 1 uses the quant model; Phase 2 hooks in a PPO/SAC agent
 
 ---
@@ -66,7 +71,8 @@ main.py
   │       └── OrderManager (diff-and-repost)
   └── FastAPI server (uvicorn)
       ├── REST routes  (/health, /api/*)
-      └── WebSocket    (/ws)
+      ├── WebSocket    (/ws)
+      └── Static files (/static/index.html — live dashboard)
 ```
 
 ### Module Map
@@ -112,7 +118,7 @@ main.py
 ### Prerequisites
 
 - Python 3.10+
-- API keys for one or more of: KuCoin, Gate.io, MEXC, Kraken
+- API keys for one or more of: KuCoin, Gate.io, MEXC, Kraken, Binance
 
 ### 1. Clone and install
 
@@ -141,7 +147,7 @@ Open `bot.json` and verify the spread, depth, and safety parameters (see [Config
 python main.py
 ```
 
-The REST API will be available at `http://localhost:8000`. Check `GET /health` to verify the bot is running.
+The REST API will be available at `http://localhost:8000`. Check `GET /health` to verify the bot is running. Open `http://localhost:8000/static/index.html` for the live web dashboard.
 
 ### 5. Enable live trading
 
@@ -178,6 +184,8 @@ Configuration is split between environment variables (secrets and runtime flags)
 | `MEXC_API_SECRET` | — | MEXC API secret |
 | `KRAKEN_API_KEY` | — | Kraken API key |
 | `KRAKEN_API_SECRET` | — | Kraken API secret |
+| `BINANCE_API_KEY` | — | Binance API key |
+| `BINANCE_API_SECRET` | — | Binance API secret |
 
 ### bot.json Reference
 
@@ -196,10 +204,13 @@ Configuration is split between environment variables (secrets and runtime flags)
 
   // Volatility model parameters (shared across all exchanges)
   "volatility": {
-    "window_minutes": 10,     // Rolling window for std-dev calculation
-    "low_threshold":  0.001,  // Vol below this → aggressiveness = 1.0 (tightest spreads)
-    "high_threshold": 0.003,  // Vol above this → aggressiveness = 0.0 (widest spreads)
-    "power":          2.0     // Power-curve exponent for the aggressiveness mapping
+    "window_minutes": 10,              // Rolling window for std-dev calculation
+    "low_threshold":  0.001,           // Vol below this → aggressiveness = 1.0
+    "high_threshold": 0.003,           // Vol above this → aggressiveness = 0.0
+    "power":          2.0,             // Power-curve exponent for aggressiveness mapping
+    "base_aggressiveness": 1.0,        // User ceiling for aggressiveness (1.0 = no change, 0.4 = scale to 40%)
+    "trending_threshold":  0.0015,     // Mean candle direction above this → trending regime
+    "choppy_threshold":    0.0005      // Mean candle direction below this → choppy regime
   },
 
   // Per-exchange configuration (one entry per exchange)
@@ -212,19 +223,29 @@ Configuration is split between environment variables (secrets and runtime flags)
 
       // Spread: bid/ask price levels as % from global_mid
       "spread": {
-        "buy_min_pct":    -5.0,  // Furthest buy level (agg=0): -5% below mid
-        "buy_max_pct":    -0.1,  // Closest buy level (agg=1):  -0.1% below mid
-        "sell_min_pct":    0.3,  // Closest sell level (agg=1): +0.3% above mid
-        "sell_max_pct":    7.0,  // Furthest sell level (agg=0): +7% above mid
-        "curve_strength":  4.0   // Controls curve shape; higher = more aggressive clustering
+        "buy_min_pct":         -5.0,   // Furthest buy level: -5% below mid
+        "buy_max_pct":         -0.1,   // Closest buy level:  -0.1% below mid
+        "sell_min_pct":         0.3,   // Closest sell level: +0.3% above mid
+        "sell_max_pct":         7.0,   // Furthest sell level: +7% above mid
+        "curve_strength":       4.0,   // Controls curve shape; higher = more aggressive clustering
+        "tick_size":            0.0001, // Price tick size for rounding
+
+        // Optional per-side overrides (omit or null to use shared defaults)
+        "buy_levels":           null,  // Buy-side level count (null → depth.levels)
+        "sell_levels":          null,  // Sell-side level count (null → depth.levels)
+        "buy_curve_strength":   null,  // Buy-side curve strength (null → curve_strength)
+        "sell_curve_strength":  null,  // Sell-side curve strength (null → curve_strength)
+        "buy_min_step":         0.0,   // Min % step between buy levels (0 = disabled)
+        "sell_min_step":        0.0    // Min % step between sell levels (0 = disabled)
       },
 
       // Depth: budget distribution across price levels
       "depth": {
-        "levels":            15,      // Number of bid/ask levels per side
-        "total_budget_usd": 1000.0,   // Total USD to deploy across all levels
-        "curve_strength":    4.0,     // Controls passive vs. equal distribution blend
-        "min_order_usd":     5.0      // Minimum order size (smaller orders are skipped)
+        "levels":            15,       // Number of bid/ask levels per side (default)
+        "total_budget_usd": 1000.0,    // Total USD to deploy across all levels
+        "curve_strength":    4.0,      // Controls passive vs. equal distribution blend
+        "min_order_usd":     5.0,      // Minimum order size (smaller orders are skipped)
+        "min_step_usd":      0.0       // Min USD decrement between levels (0 = disabled)
       },
 
       // Safety: risk thresholds for this exchange
@@ -317,7 +338,7 @@ Connect to `ws://localhost:8000/ws` to receive real-time events:
 
 | Event | Description |
 |---|---|
-| `tick_update` | Per-exchange tick (price, vol, aggressiveness, open order count) |
+| `tick_update` | Per-exchange tick (price, vol, aggressiveness, regime, skew, intended order grid) |
 | `order_placed` | New order successfully placed |
 | `order_filled` | Order fill detected |
 | `order_canceled` | Order canceled (stale or on Q-Switch) |
@@ -397,6 +418,13 @@ Maps the current volatility to a scalar `aggressiveness ∈ [0.0, 1.0]` using a 
 - `vol ≥ high_threshold` → `aggressiveness = 0.0` (widest spreads)
 - In between: power-curve interpolation with exponent `power` (default 2.0)
 
+**Regime adjustment**: In trending markets, buy/sell aggressiveness is adjusted asymmetrically:
+- `trending_up`: buy \* 0.8, sell \* 1.1 (sell more aggressively into the pump)
+- `trending_down`: buy \* 1.1, sell \* 0.8 (buy more aggressively on the dip)
+- `choppy`: symmetric (no adjustment)
+
+**Base aggressiveness scaling**: The final aggressiveness is multiplied by `base_aggressiveness` (default 1.0). Set to e.g. 0.4 to cap all aggressiveness at 40% of the computed value, resulting in wider spreads across the board.
+
 ### Spread Engine (Huy's Meta Config V1)
 
 For each side (bid/ask) and each level `i ∈ [1, N]`, the price level is:
@@ -410,6 +438,8 @@ where `t = i / N` and `gamma = exp(curve_strength × (1 - 2 × aggressiveness))`
 - At `aggressiveness = 1.0`: levels cluster near mid (tight, incentivise volume)
 - At `aggressiveness = 0.0`: levels cluster far from mid (wide, protect inventory)
 
+**Per-side control**: Buy and sell sides can have independent `curve_strength`, level counts, and minimum step enforcement. When `buy_min_step` or `sell_min_step` is set, consecutive levels are guaranteed to be at least that many percentage points apart. Prices are rounded to `tick_size` (default 0.0001) for exchange precision.
+
 ### Depth Engine
 
 Total budget is distributed across levels using a blend of two strategies:
@@ -418,6 +448,8 @@ Total budget is distributed across levels using a blend of two strategies:
 - **Equal distribution**: flat — each level gets `budget / N`
 
 The blend ratio is `aggressiveness ^ curve_strength`. At high aggressiveness the distribution is more equal (more volume at outer levels); at low aggressiveness it is more front-loaded.
+
+When `min_step_usd` is set (default 0), consecutive levels are guaranteed to decrease by at least that USD amount (level 0 = closest to mid = largest). The `min_order_usd` floor still applies after min-step enforcement.
 
 The `skew_factor` from InventoryTracker further multiplies buy vs. sell budgets:
 
@@ -522,9 +554,10 @@ pip install -r requirements.txt
 ```bash
 pytest
 pytest -v --asyncio-mode=auto   # verbose, with async test support
+pytest tests/test_huy_integration.py -v  # per-side spread, depth min-step, base aggressiveness tests
 ```
 
-> Note: test files are not yet included in the repo. The pytest infrastructure (`pytest-asyncio`) is wired up and ready.
+The test suite covers spread engine, depth engine, aggressiveness model, circuit breaker, inventory tracker, order manager, and the Huy integration features (per-side control, min-step enforcement, base aggressiveness scaling, config backward compatibility).
 
 ### Extending the exchange layer
 
