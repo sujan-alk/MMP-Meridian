@@ -9,9 +9,12 @@ import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
 from utils.logging import get_logger
@@ -72,6 +75,11 @@ def create_app(
 
     # Register routes
     app.include_router(router)
+
+    # Serve web UI dashboard from static/ directory
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir), html=True), name="static")
 
     @app.on_event("startup")
     async def on_startup():

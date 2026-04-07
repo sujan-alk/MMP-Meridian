@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alkimi MM Platform — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Courier New', monospace; }
+    .card { background: #1f2937; border: 1px solid #374151; border-radius: 8px; padding: 16px; }
+    .badge-running { background: #065f46; color: #6ee7b7; }
+    .badge-quoting { background: #1e3a5f; color: #93c5fd; }
+    .badge-error   { background: #7f1d1d; color: #fca5a5; }
+    .badge-stopped { background: #374151; color: #9ca3af; }
+    #log-feed { height: 200px; overflow-y: auto; font-size: 11px; }
+    .log-line { border-bottom: 1px solid #1f2937; padding: 2px 0; }
+    ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+
+<!-- HEADER -->
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-emerald-400 font-bold text-lg">ALKIMI MM</span>
+    <span class="text-gray-500 text-sm">Live Dashboard</span>
+    <span id="dry-run-badge" class="hidden bg-yellow-900 text-yellow-300 text-xs px-2 py-0.5 rounded">DRY RUN</span>
+  </div>
+  <div class="flex items-center gap-2">
+    <div id="ws-indicator" class="w-2 h-2 rounded-full bg-gray-500" title="WebSocket status"></div>
+    <span id="ws-status" class="text-sm text-gray-400">Connecting...</span>
+  </div>
+</header>
+
+<!-- MAIN LAYOUT -->
+<div class="p-4 bg-gray-950" style="min-height: calc(100vh - 52px)">
+
+  <!-- Exchange cards grid -->
+  <h2 class="text-emerald-400 font-bold mb-3 text-sm uppercase tracking-wider">Exchanges</h2>
+  <div id="exchange-cards" class="grid grid-cols-1 gap-3 mb-4" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr))">
+    <div class="card text-gray-500 text-sm text-center py-8">
+      Waiting for tick data...
+    </div>
+  </div>
+
+  <!-- Log feed -->
+  <div class="card">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs text-gray-400 font-bold uppercase tracking-wider">Activity Log</span>
+      <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+    </div>
+    <div id="log-feed"></div>
+  </div>
+
+</div>
+
+<script>
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
+let ws = null;
+let wsReconnectTimer = null;
+const exchangeStates = {};
+
+// -----------------------------------------------------------------------
+// WebSocket — connects to main branch LiveFeed at /ws
+// Main branch sends: { event: "tick_update", data: {...}, timestamp: ... }
+// -----------------------------------------------------------------------
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    clearTimeout(wsReconnectTimer);
+    document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-emerald-400';
+    document.getElementById('ws-status').textContent = 'Connected';
+    addLog('WebSocket connected', 'info');
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      handleMessage(msg);
+    } catch (_) {}
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-red-400';
+    document.getElementById('ws-status').textContent = 'Disconnected';
+    wsReconnectTimer = setTimeout(connectWS, 2000);
+  };
+
+  ws.onerror = () => {
+    document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-red-400';
+    document.getElementById('ws-status').textContent = 'Error';
+  };
+}
+
+function handleMessage(msg) {
+  // Main branch LiveFeed format: { event: "tick_update", data: {...}, timestamp: ... }
+  const event = msg.event;
+  const data = msg.data || {};
+
+  if (event === 'tick_update') {
+    updateExchangeCard(data);
+    const agg = data.aggressiveness != null ? (data.aggressiveness * 100).toFixed(1) + '%' : '?';
+    const regime = data.regime || '?';
+    addLog(`[${data.exchange}] mid=${fmt(data.global_mid)} | orders=${data.open_orders} placed=${data.placed_count} | vol=${data.volatility} agg=${agg} ${regime}`, 'info');
+  } else if (event === 'emergency_stop') {
+    addLog(`EMERGENCY STOP [${data.exchange}]: ${data.reason}`, 'error');
+  } else if (event === 'bot_started') {
+    addLog(`Bot started: ${data.exchange}`, 'info');
+  } else if (event === 'bot_stopped') {
+    addLog(`Bot stopped: ${data.exchange}`, 'warn');
+  } else if (event === 'config_reloaded') {
+    addLog('Config reloaded', 'info');
+  }
+}
+
+// -----------------------------------------------------------------------
+// Exchange cards
+// -----------------------------------------------------------------------
+function updateExchangeCard(data) {
+  exchangeStates[data.exchange] = data;
+  const container = document.getElementById('exchange-cards');
+
+  // Remove placeholder
+  const placeholder = container.querySelector('.text-center');
+  if (placeholder) placeholder.remove();
+
+  const existing = document.getElementById('card-' + data.exchange);
+  const html = renderCard(data);
+
+  if (existing) {
+    existing.outerHTML = html;
+  } else {
+    container.insertAdjacentHTML('beforeend', html);
+  }
+}
+
+function fmt(n) { return typeof n === 'number' ? n.toPrecision(6) : (n || '?'); }
+
+function renderCard(d) {
+  const regime = d.regime || '?';
+  const agg = d.aggressiveness != null ? (d.aggressiveness * 100).toFixed(1) + '%' : '?';
+  const skew = d.skew_factor != null ? d.skew_factor.toFixed(4) : '?';
+  const vol = d.volatility != null ? d.volatility.toFixed(6) : '?';
+
+  const buyRows = (d.intended_buy_orders || []).slice(0, 5).map(o =>
+    `<tr><td class="text-emerald-400 pr-2">${fmt(o.price)}</td><td class="text-gray-400">${o.usd.toFixed(2)} USD</td></tr>`
+  ).join('');
+  const sellRows = (d.intended_sell_orders || []).slice(0, 5).map(o =>
+    `<tr><td class="text-red-400 pr-2">${fmt(o.price)}</td><td class="text-gray-400">${o.usd.toFixed(2)} USD</td></tr>`
+  ).join('');
+
+  const buyCount = d.intended_buy_orders ? d.intended_buy_orders.length : '?';
+  const sellCount = d.intended_sell_orders ? d.intended_sell_orders.length : '?';
+
+  return `<div id="card-${d.exchange}" class="card">
+    <div class="flex justify-between items-center mb-3">
+      <span class="font-bold text-white uppercase">${d.exchange}</span>
+      <span class="text-xs px-2 py-0.5 rounded font-bold badge-running">ACTIVE</span>
+    </div>
+    <div class="grid grid-cols-3 gap-2 mb-3 text-xs">
+      <div><div class="text-gray-500">Global Mid</div><div class="text-white font-bold">${fmt(d.global_mid)}</div></div>
+      <div><div class="text-gray-500">Volatility</div><div>${vol}</div></div>
+      <div><div class="text-gray-500">Aggressiveness</div><div>${agg}</div></div>
+    </div>
+    <div class="grid grid-cols-3 gap-2 mb-3 text-xs">
+      <div><div class="text-gray-500">Regime</div><div>${regime}</div></div>
+      <div><div class="text-gray-500">Skew Factor</div><div>${skew}</div></div>
+      <div><div class="text-gray-500">Open Orders</div><div>${d.open_orders}</div></div>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-xs">
+      <div>
+        <div class="text-gray-500 mb-1">Top Buys (${buyCount} total)</div>
+        <table class="w-full">${buyRows || '<tr><td class="text-gray-600">No data</td></tr>'}</table>
+      </div>
+      <div>
+        <div class="text-gray-500 mb-1">Top Sells (${sellCount} total)</div>
+        <table class="w-full">${sellRows || '<tr><td class="text-gray-600">No data</td></tr>'}</table>
+      </div>
+    </div>
+  </div>`;
+}
+
+// -----------------------------------------------------------------------
+// Log feed
+// -----------------------------------------------------------------------
+function addLog(msg, level) {
+  const feed = document.getElementById('log-feed');
+  const colors = { info: 'text-gray-300', warn: 'text-yellow-400', error: 'text-red-400' };
+  const time = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.className = 'log-line ' + (colors[level] || 'text-gray-300');
+  line.textContent = `[${time}] ${msg}`;
+  feed.prepend(line);
+  while (feed.children.length > 200) feed.removeChild(feed.lastChild);
+}
+
+function clearLog() {
+  document.getElementById('log-feed').innerHTML = '';
+}
+
+// -----------------------------------------------------------------------
+// Init
+// -----------------------------------------------------------------------
+connectWS();
+</script>
+</body>
+</html>

@@ -90,6 +90,7 @@ class SpreadEngine:
         widest: float,
         agg: float,
         n: int,
+        curve_strength: float | None = None,
     ) -> list[float]:
         """
         Generate n spread values between tightest and widest.
@@ -103,8 +104,12 @@ class SpreadEngine:
           - agg=0 → gamma = exp(curve_strength) → steep curve, wide clustering
           - agg=1 → gamma = exp(-curve_strength) → shallow curve, tight clustering
           - agg=0.5 → gamma = 1 → linear (even spacing)
+
+        Args:
+            curve_strength: per-side override; None → use self.cfg.curve_strength
         """
-        gamma = np.exp(self.cfg.curve_strength * (2.0 * agg - 1.0))
+        cs = curve_strength if curve_strength is not None else self.cfg.curve_strength
+        gamma = np.exp(cs * (2.0 * agg - 1.0))
         t = np.linspace(0.0, 1.0, n)
         # Level 0 = tightest, level n-1 = widest
         levels = tightest + (widest - tightest) * (t ** gamma)
@@ -154,3 +159,74 @@ class SpreadEngine:
         buy_prices = [global_mid * (1.0 + s / 100.0) for s in buy_spreads]
         sell_prices = [global_mid * (1.0 + s / 100.0) for s in sell_spreads]
         return buy_prices, sell_prices
+
+    # ------------------------------------------------------------------
+    # Per-side control (Huy Phase 1 formulas)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def enforce_min_step(levels: list[float], min_step: float) -> list[float]:
+        """
+        Walk outward from level 0, ensuring consecutive levels are at least
+        ``min_step`` apart in absolute value.
+
+        For sell (positive) spreads: pushes levels further positive.
+        For buy (negative) spreads: pushes levels further negative.
+        """
+        if min_step <= 0 or len(levels) < 2:
+            return levels
+        result = list(levels)
+        for i in range(1, len(result)):
+            if result[i - 1] > 0:
+                min_required = result[i - 1] + min_step
+            else:
+                min_required = result[i - 1] - min_step
+            if abs(result[i] - result[i - 1]) < min_step:
+                result[i] = min_required
+        return result
+
+    def compute_levels_huy(
+        self,
+        buy_agg: float,
+        sell_agg: float,
+        buy_levels: int,
+        sell_levels: int,
+        buy_curve_strength: float,
+        sell_curve_strength: float,
+        buy_min_step: float = 0.0,
+        sell_min_step: float = 0.0,
+    ) -> tuple[list[float], list[float]]:
+        """
+        Compute spread levels with full per-side control.
+
+        Extends ``compute_levels_dual`` with independent level counts,
+        curve strengths, and minimum step enforcement per side.
+
+        Args:
+            buy_agg / sell_agg: aggressiveness per side ∈ [0, 1]
+            buy_levels / sell_levels: number of orders per side
+            buy_curve_strength / sell_curve_strength: power-curve exponent per side
+            buy_min_step / sell_min_step: minimum % gap between consecutive levels
+
+        Returns:
+            (buy_spreads, sell_spreads) — lists may have different lengths.
+        """
+        buy = self._compute_side_levels(
+            tightest=self.cfg.buy_max_pct,
+            widest=self.cfg.buy_min_pct,
+            agg=clip(buy_agg, 0.0, 1.0),
+            n=buy_levels,
+            curve_strength=buy_curve_strength,
+        )
+        sell = self._compute_side_levels(
+            tightest=self.cfg.sell_min_pct,
+            widest=self.cfg.sell_max_pct,
+            agg=clip(sell_agg, 0.0, 1.0),
+            n=sell_levels,
+            curve_strength=sell_curve_strength,
+        )
+        if buy_min_step > 0:
+            buy = self.enforce_min_step(buy, buy_min_step)
+        if sell_min_step > 0:
+            sell = self.enforce_min_step(sell, sell_min_step)
+        return buy, sell

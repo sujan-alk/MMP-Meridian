@@ -21,6 +21,15 @@ class SpreadConfig(BaseModel):
     sell_max_pct: float = Field(default=7.0, description="Furthest sell spread (most passive)")
     curve_strength: float = Field(default=4.0, ge=0.5, le=10.0)
 
+    # Per-side overrides (None = fall back to shared defaults)
+    buy_levels: int | None = Field(default=None, ge=3, le=30, description="Buy-side level count (None → depth.levels)")
+    sell_levels: int | None = Field(default=None, ge=3, le=30, description="Sell-side level count (None → depth.levels)")
+    buy_curve_strength: float | None = Field(default=None, ge=0.5, le=10.0, description="Buy-side curve strength (None → curve_strength)")
+    sell_curve_strength: float | None = Field(default=None, ge=0.5, le=10.0, description="Sell-side curve strength (None → curve_strength)")
+    buy_min_step: float = Field(default=0.0, ge=0.0, description="Min % step between consecutive buy levels (0 = disabled)")
+    sell_min_step: float = Field(default=0.0, ge=0.0, description="Min % step between consecutive sell levels (0 = disabled)")
+    tick_size: float = Field(default=0.0001, gt=0, description="Price tick size for rounding")
+
     @field_validator("buy_min_pct")
     @classmethod
     def buy_min_must_be_negative(cls, v: float) -> float:
@@ -42,6 +51,7 @@ class DepthConfig(BaseModel):
     total_budget_usd: float = Field(default=1000.0, gt=0, description="Total USD allocated (split buy/sell)")
     curve_strength: float = Field(default=4.0, ge=0.5, le=10.0, description="Amount distribution curve strength")
     min_order_usd: float = Field(default=5.0, gt=0, description="Minimum single order size in USD")
+    min_step_usd: float = Field(default=0.0, ge=0.0, description="Min USD decrement between consecutive levels (0 = disabled)")
 
 
 class VolatilityConfig(BaseModel):
@@ -58,6 +68,10 @@ class VolatilityConfig(BaseModel):
     power: float = Field(
         default=2.0, ge=1.0, le=5.0,
         description="Curve power: 1=linear, 2=quadratic, 3=cubic"
+    )
+    base_aggressiveness: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="User ceiling for aggressiveness scaling (1.0 = no change, 0.4 = scale to 40%)"
     )
     trending_threshold: float = Field(
         default=0.0015, gt=0,
@@ -93,7 +107,7 @@ class SafetyConfig(BaseModel):
 # Exchange-level config
 # ---------------------------------------------------------------------------
 
-ExchangeName = Literal["kucoin", "gate", "mexc", "kraken"]
+ExchangeName = Literal["kucoin", "gate", "mexc", "kraken", "binance"]
 QuoteCurrency = Literal["USDT", "USD"]
 
 
@@ -123,18 +137,24 @@ class GlobalMidWeights(BaseModel):
     gate: float = Field(default=0.45, ge=0.0, le=1.0)
     mexc: float = Field(default=0.05, ge=0.0, le=1.0)
     kraken: float = Field(default=0.05, ge=0.0, le=1.0)
+    binance: float = Field(default=0.0, ge=0.0, le=1.0)
 
-    @field_validator("kraken")
+    @field_validator("binance")
     @classmethod
     def weights_must_sum_to_one(cls, v: float, info) -> float:
         data = info.data
-        total = data.get("kucoin", 0) + data.get("gate", 0) + data.get("mexc", 0) + v
+        total = (data.get("kucoin", 0) + data.get("gate", 0)
+                 + data.get("mexc", 0) + data.get("kraken", 0) + v)
         if abs(total - 1.0) > 0.001:
             raise ValueError(f"GlobalMidWeights must sum to 1.0 (got {total:.4f})")
         return v
 
     def as_dict(self) -> dict[str, float]:
-        return {"kucoin": self.kucoin, "gate": self.gate, "mexc": self.mexc, "kraken": self.kraken}
+        return {
+            "kucoin": self.kucoin, "gate": self.gate,
+            "mexc": self.mexc, "kraken": self.kraken,
+            "binance": self.binance,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -161,19 +161,53 @@ class ExchangeBot:
         skew = self.inventory.skew_factor()
 
         # 4. Compute order grid using the quant model
-        n = self.config.depth.levels
-        buy_agg, sell_agg = self.agg_model.compute_with_regime(
+        # Base aggressiveness scaling (Huy formula):
+        # scale raw values by user-defined ceiling (default 1.0 = no change)
+        raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_regime(
             state.volatility, state.zz_regime
         )
+        base = self.agg_model.cfg.base_aggressiveness
+        buy_agg = raw_buy_agg * base
+        sell_agg = raw_sell_agg * base
 
-        buy_spreads, sell_spreads = self.spread_engine.compute_levels_dual(buy_agg, sell_agg, n)
+        # Resolve per-side params (fall back to shared defaults when None)
+        buy_n = self.config.spread.buy_levels or self.config.depth.levels
+        sell_n = self.config.spread.sell_levels or self.config.depth.levels
+        buy_cs = self.config.spread.buy_curve_strength or self.config.spread.curve_strength
+        sell_cs = self.config.spread.sell_curve_strength or self.config.spread.curve_strength
 
-        buy_prices, sell_prices = self.spread_engine.prices_from_spreads(
-            state.global_mid, buy_spreads, sell_spreads
+        # Spread computation with full per-side control
+        buy_spreads, sell_spreads = self.spread_engine.compute_levels_huy(
+            buy_agg=buy_agg,
+            sell_agg=sell_agg,
+            buy_levels=buy_n,
+            sell_levels=sell_n,
+            buy_curve_strength=buy_cs,
+            sell_curve_strength=sell_cs,
+            buy_min_step=self.config.spread.buy_min_step,
+            sell_min_step=self.config.spread.sell_min_step,
         )
 
-        buy_usd_amounts = self.depth_engine.compute_amounts(buy_agg, n, skew, "buy")
-        sell_usd_amounts = self.depth_engine.compute_amounts(sell_agg, n, skew, "sell")
+        # Price conversion with tick rounding (Huy formula)
+        tick = self.config.spread.tick_size
+        buy_prices = [
+            round(state.global_mid * (1.0 + s / 100.0) / tick) * tick
+            for s in buy_spreads
+        ]
+        sell_prices = [
+            round(state.global_mid * (1.0 + s / 100.0) / tick) * tick
+            for s in sell_spreads
+        ]
+
+        # Depth with min_step_usd enforcement
+        buy_usd_amounts = self.depth_engine.compute_amounts(
+            buy_agg, buy_n, skew, "buy",
+            min_step_usd=self.config.depth.min_step_usd,
+        )
+        sell_usd_amounts = self.depth_engine.compute_amounts(
+            sell_agg, sell_n, skew, "sell",
+            min_step_usd=self.config.depth.min_step_usd,
+        )
 
         buy_token_amounts = [
             self.depth_engine.usd_to_token_amount(usd, p)
@@ -228,7 +262,7 @@ class ExchangeBot:
             )
             self._last_rl_at = ts
 
-        # 8. Emit WebSocket event
+        # 8. Emit WebSocket event (includes order grid for UI dashboard)
         await self.live_feed.emit_tick(
             exchange=self.exchange,
             global_mid=state.global_mid,
@@ -237,6 +271,11 @@ class ExchangeBot:
             skew_factor=skew,
             open_orders=self.order_manager.open_order_count,
             placed_count=len(placed),
+            regime=state.zz_regime,
+            buy_prices=buy_prices,
+            sell_prices=sell_prices,
+            buy_amounts=buy_usd_amounts,
+            sell_amounts=sell_usd_amounts,
         )
 
     # ------------------------------------------------------------------

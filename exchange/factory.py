@@ -16,6 +16,7 @@ _CCXT_NAME_MAP: dict[str, str] = {
     "gate": "gate",
     "mexc": "mexc",
     "kraken": "kraken",
+    "binance": "binance",
 }
 
 

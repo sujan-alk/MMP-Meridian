@@ -99,8 +99,13 @@ class LiveFeed:
         skew_factor: float,
         open_orders: int,
         placed_count: int,
+        regime: str | None = None,
+        buy_prices: list[float] | None = None,
+        sell_prices: list[float] | None = None,
+        buy_amounts: list[float] | None = None,
+        sell_amounts: list[float] | None = None,
     ) -> None:
-        await self.broadcast(EventType.TICK_UPDATE, {
+        payload: dict = {
             "exchange": exchange,
             "global_mid": global_mid,
             "volatility": round(volatility, 6),
@@ -108,7 +113,20 @@ class LiveFeed:
             "skew_factor": round(skew_factor, 4),
             "open_orders": open_orders,
             "placed_count": placed_count,
-        })
+        }
+        if regime is not None:
+            payload["regime"] = regime
+        if buy_prices is not None and buy_amounts is not None:
+            payload["intended_buy_orders"] = [
+                {"price": round(p, 6), "usd": round(a, 2)}
+                for p, a in zip(buy_prices, buy_amounts)
+            ]
+        if sell_prices is not None and sell_amounts is not None:
+            payload["intended_sell_orders"] = [
+                {"price": round(p, 6), "usd": round(a, 2)}
+                for p, a in zip(sell_prices, sell_amounts)
+            ]
+        await self.broadcast(EventType.TICK_UPDATE, payload)
 
     async def emit_emergency_stop(self, exchange: str, reason: str) -> None:
         await self.broadcast(EventType.EMERGENCY_STOP, {

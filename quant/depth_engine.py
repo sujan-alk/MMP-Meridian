@@ -38,6 +38,7 @@ class DepthEngine:
         n_levels: int,
         skew_factor: float = 1.0,
         side: str = "buy",
+        min_step_usd: float = 0.0,
     ) -> list[float]:
         """
         Compute USD amounts for each order level.
@@ -49,6 +50,8 @@ class DepthEngine:
                 > 1.0 → increase buy budget (token deficit, need to buy more)
                 < 1.0 → increase sell budget (token surplus, need to sell more)
             side: "buy" | "sell"
+            min_step_usd: minimum USD decrement between consecutive levels
+                (level 0 = largest). 0.0 = disabled.
 
         Returns:
             list[float]: USD amount per level, length n_levels
@@ -75,6 +78,14 @@ class DepthEngine:
             side_budget = half_budget * clip(2.0 - skew_factor, 0.5, 2.0)
 
         raw_amounts = ratio * side_budget
+
+        # Enforce minimum USD decrement between consecutive levels
+        # (level 0 = closest to mid = largest; levels decrease outward)
+        if min_step_usd > 0 and n > 1:
+            for i in range(1, n):
+                min_val = raw_amounts[i - 1] - min_step_usd
+                if raw_amounts[i] > min_val:
+                    raw_amounts[i] = max(min_val, 0.0)
 
         # Apply minimum order size, then cap total back to side_budget.
         # (min_order × n_levels can exceed side_budget on tight budgets.)
