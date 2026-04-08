@@ -5,16 +5,23 @@ One ExchangeBot runs per exchange (KuCoin, Gate, MEXC, Kraken).
 It receives a GlobalState from the Orchestrator via an asyncio.Queue
 and manages the order grid for its exchange.
 
+Part of Meridian's Option B hierarchical architecture: each ExchangeBot
+receives a RegimeState from the shared RegimeMaster and applies regime
+multipliers (spread_mult, depth_mult, aggressiveness, inventory_skew) to
+ensure all bots quote consistently with the same market view.
+
 Tick sequence:
-1. Receive GlobalState (global_mid + volatility + aggressiveness)
-2. Fetch balance (cached, refreshed every BALANCE_CACHE_S seconds)
-3. Safety checks: Q-Switch + CircuitBreaker
-4. Update InventoryTracker → skew_factor
-5. Compute spread levels + amounts from quant model
-6. OrderManager.diff_and_repost → cancel stale, place new
-7. Record inventory snapshot + RL features to DB
-8. Emit TICK_UPDATE event to WebSocket feed
-9. Heartbeat.beat()
+1. Receive GlobalState (global_mid + volatility + aggressiveness + regime_state)
+2. Drain latest RegimeState from regime_queue (non-blocking)
+3. Fetch balance (cached, refreshed every BALANCE_CACHE_S seconds)
+4. Safety checks: Q-Switch + CircuitBreaker
+5. Update InventoryTracker → skew_factor (adjusted by regime inventory_skew)
+6. Compute spread levels + amounts from quant model using regime multipliers
+7. OrderManager.diff_and_repost → cancel stale, place new
+8. Poll for fills periodically
+9. Record inventory snapshot + RL features to DB
+10. Emit TICK_UPDATE event to WebSocket feed
+11. Heartbeat.beat()
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from utils.time_utils import now_s
 if TYPE_CHECKING:
     from api.websocket import LiveFeed
     from core.orchestrator import GlobalState
+    from core.regime_master import RegimeState
 
 log = get_logger("exchange_bot")
 
@@ -66,6 +74,7 @@ class ExchangeBot:
         live_feed: "LiveFeed",
         agg_model: AggressivenessModel,
         live_mode: bool = False,
+        regime_queue: asyncio.Queue | None = None,
     ):
         self.config = config
         self.exchange = config.exchange
@@ -84,6 +93,10 @@ class ExchangeBot:
         self.depth_engine = DepthEngine(config.depth)
         self.agg_model = agg_model
         self.order_manager = OrderManager(connector, config, db, self.rate_limiter, live_mode)
+
+        # Regime queue: receives RegimeState updates from the RegimeMaster (Option B)
+        self.regime_queue: asyncio.Queue | None = regime_queue
+        self._current_regime_state: "RegimeState | None" = None
 
         self._running = False
         self._balance: Balance | None = None
@@ -141,12 +154,18 @@ class ExchangeBot:
         """Process one tick: update quant model + manage orders."""
         self._last_global_state = state
 
-        # 1. Fetch balance (cached)
+        # 1. Drain latest RegimeState from regime queue (non-blocking, Option B)
+        self._drain_regime_queue()
+
+        # Resolve mm_params from regime state
+        mm_params = self._resolve_mm_params(state)
+
+        # 2. Fetch balance (cached)
         balance = await self._get_balance()
         if balance is None:
             return
 
-        # 2. Safety checks
+        # 3. Safety checks
         if self.q_switch.check(balance):
             log.warning("tick_skipped_q_switch", exchange=self.exchange)
             return
@@ -156,19 +175,31 @@ class ExchangeBot:
                         reason=self.circuit_breaker.trip_reason)
             return
 
-        # 3. Inventory tracking
+        # 4. Inventory tracking (adjusted by regime inventory_skew)
         self.inventory.update(balance)
         skew = self.inventory.skew_factor()
+        inventory_skew = mm_params.get('inventory_skew', 0.0)
+        if inventory_skew != 0.0:
+            skew = max(0.5, min(2.0, skew + inventory_skew))
 
-        # 4. Compute order grid using the quant model
+        # 5. Compute order grid using quant model + regime multipliers
         # Base aggressiveness scaling (Huy formula):
         # scale raw values by user-defined ceiling (default 1.0 = no change)
-        raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_regime(
-            state.volatility, state.zz_regime
-        )
-        base = self.agg_model.cfg.base_aggressiveness
-        buy_agg = raw_buy_agg * base
-        sell_agg = raw_sell_agg * base
+        regime_agg = mm_params.get('aggressiveness', None)
+        if regime_agg is not None:
+            # Regime overrides aggressiveness directly
+            buy_agg = regime_agg
+            sell_agg = regime_agg
+        else:
+            raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_regime(
+                state.volatility, state.zz_regime
+            )
+            base = self.agg_model.cfg.base_aggressiveness
+            buy_agg = raw_buy_agg * base
+            sell_agg = raw_sell_agg * base
+
+        spread_mult = mm_params.get('spread_mult', 1.0)
+        depth_mult = mm_params.get('depth_mult', 1.0)
 
         # Resolve per-side params (fall back to shared defaults when None)
         buy_n = self.config.spread.buy_levels or self.config.depth.levels
@@ -176,7 +207,7 @@ class ExchangeBot:
         buy_cs = self.config.spread.buy_curve_strength or self.config.spread.curve_strength
         sell_cs = self.config.spread.sell_curve_strength or self.config.spread.curve_strength
 
-        # Spread computation with full per-side control
+        # Spread computation with full per-side control + regime spread_mult
         buy_spreads, sell_spreads = self.spread_engine.compute_levels_huy(
             buy_agg=buy_agg,
             sell_agg=sell_agg,
@@ -186,6 +217,7 @@ class ExchangeBot:
             sell_curve_strength=sell_cs,
             buy_min_step=self.config.spread.buy_min_step,
             sell_min_step=self.config.spread.sell_min_step,
+            spread_mult=spread_mult,
         )
 
         # Price conversion with tick rounding (Huy formula)
@@ -199,14 +231,16 @@ class ExchangeBot:
             for s in sell_spreads
         ]
 
-        # Depth with min_step_usd enforcement
+        # Depth with min_step_usd enforcement + regime depth_mult
         buy_usd_amounts = self.depth_engine.compute_amounts(
             buy_agg, buy_n, skew, "buy",
             min_step_usd=self.config.depth.min_step_usd,
+            depth_mult=depth_mult,
         )
         sell_usd_amounts = self.depth_engine.compute_amounts(
             sell_agg, sell_n, skew, "sell",
             min_step_usd=self.config.depth.min_step_usd,
+            depth_mult=depth_mult,
         )
 
         buy_token_amounts = [
@@ -227,16 +261,16 @@ class ExchangeBot:
             aggressiveness=(buy_agg + sell_agg) / 2.0,
         )
 
-        # 5. Diff-and-repost orders
+        # 6. Diff-and-repost orders
         placed = await self.order_manager.diff_and_repost(grid)
 
-        # 6. Poll for fills periodically
+        # 7. Poll for fills periodically
         ts = now_s()
         if ts - self._last_fill_poll_at >= FILL_POLL_INTERVAL_S:
             await self._ingest_fills()
             self._last_fill_poll_at = ts
 
-        # 7. Periodic DB writes
+        # 8. Periodic DB writes
         if ts - self._last_snapshot_at >= SNAPSHOT_INTERVAL_S:
             await insert_inventory_snapshot(
                 self.db, self.exchange, balance.usd, balance.token,
@@ -262,7 +296,7 @@ class ExchangeBot:
             )
             self._last_rl_at = ts
 
-        # 8. Emit WebSocket event (includes order grid for UI dashboard)
+        # 9. Emit WebSocket event (includes order grid for UI dashboard)
         await self.live_feed.emit_tick(
             exchange=self.exchange,
             global_mid=state.global_mid,
@@ -277,6 +311,37 @@ class ExchangeBot:
             buy_amounts=buy_usd_amounts,
             sell_amounts=sell_usd_amounts,
         )
+
+    # ------------------------------------------------------------------
+    # Regime helpers (Option B hierarchical architecture)
+    # ------------------------------------------------------------------
+
+    def _drain_regime_queue(self) -> None:
+        """
+        Non-blocking drain of the regime queue.
+        Only the latest RegimeState is kept — stale intermediate states are discarded.
+        """
+        if self.regime_queue is None:
+            return
+        latest = None
+        while True:
+            try:
+                latest = self.regime_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        if latest is not None:
+            self._current_regime_state = latest
+
+    def _resolve_mm_params(self, state: "GlobalState") -> dict:
+        """
+        Return mm_params from the latest RegimeState.
+        Priority: regime_queue update > state.regime_state > default RANGING params.
+        """
+        from quant.regime_detector import MM_PARAMETERS
+        rs = self._current_regime_state or state.regime_state
+        if rs is not None:
+            return rs.mm_params
+        return MM_PARAMETERS['RANGING'].copy()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -360,6 +425,7 @@ class ExchangeBot:
     def get_status(self) -> dict:
         state = self._last_global_state
         inv = self.inventory.state()
+        rs = self._current_regime_state or (state.regime_state if state else None)
         return {
             "exchange": self.exchange,
             "running": self._running,
@@ -372,6 +438,11 @@ class ExchangeBot:
             "volatility": state.volatility if state else None,
             "aggressiveness": state.aggressiveness if state else None,
             "zz_regime": state.zz_regime if state else None,
+            # Regime Master fields (Option B)
+            "regime": rs.regime if rs else None,
+            "regime_confidence": round(rs.confidence, 4) if rs else None,
+            "regime_agreement": rs.agreement if rs else None,
+            "regime_mm_params": rs.mm_params if rs else None,
             "balance_usd": inv.usd,
             "balance_token": inv.token,
             "skew_factor": inv.skew_factor,

@@ -1,6 +1,6 @@
-# Alkimi MM Platform
+# Meridian
 
-A production-ready automated market-making bot for the ALKIMI token, operating simultaneously across KuCoin, Gate.io, MEXC, Kraken, and Binance using an async Python architecture with advanced quantitative pricing models and multi-layered risk management.
+A production-ready automated market-making bot for the ALKIMI token, operating simultaneously across KuCoin, Gate.io, MEXC, and Kraken using an async Python architecture with advanced quantitative pricing models, a hierarchical Regime Master agent, and multi-layered risk management.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ A production-ready automated market-making bot for the ALKIMI token, operating s
 
 ## Overview
 
-The Alkimi MM Platform continuously quotes two-sided markets (bids and asks) across 4 exchanges, automatically adjusting spread width and order depth based on real-time volatility. It computes a single **global mid-price** as a weighted average across all exchanges, uses that as the reference for all quotes, and tracks inventory drift to skew orders when the token balance deviates from its starting position.
+Meridian continuously quotes two-sided markets (bids and asks) across 4 exchanges, automatically adjusting spread width and order depth based on real-time volatility and market regime. It computes a single **global mid-price** as a weighted average across all exchanges, uses that as the reference for all quotes, and tracks inventory drift to skew orders when the token balance deviates from its starting position.
 
 Key design principles:
 - **Dry-run by default** — calculates and logs orders without placing them until `LIVE_MODE=true`
@@ -52,6 +52,8 @@ Key design principles:
 
 ## Architecture
 
+Meridian implements **Option B: Hierarchical Architecture** — a single Regime Master agent provides a unified market regime view to all four exchange bots, eliminating regime divergence across exchanges.
+
 ```
 main.py
   ├── Database (aiosqlite, WAL mode)
@@ -60,20 +62,38 @@ main.py
   │   ├── Global price loop (1 s tick — fetches all 4 tickers, computes global_mid)
   │   ├── VolatilityEngine  (rolling std-dev + Zhang-Zhang)
   │   ├── AggressivenessModel (power-curve mapping vol → [0.0, 1.0])
+  │   ├── RegimeMaster  ← Option B hierarchical architecture
+  │   │   ├── HMM RegimeDetector (RANGING / TRENDING / HIGH_VOL / THIN_BOOK)
+  │   │   ├── Zhang-Zhang cross-check
+  │   │   ├── Reconciliation (disagree → conservative params)
+  │   │   └── Broadcasts unified RegimeState to all ExchangeBots
   │   └── ExchangeBot × 4  (one per exchange, each with its own async queue)
   │       ├── InventoryTracker
   │       ├── QSwitch
   │       ├── CircuitBreaker
   │       ├── HeartbeatMonitor
   │       ├── RateLimiter
-  │       ├── SpreadEngine
-  │       ├── DepthEngine
+  │       ├── SpreadEngine  (regime spread_mult applied)
+  │       ├── DepthEngine   (regime depth_mult applied)
   │       └── OrderManager (diff-and-repost)
   └── FastAPI server (uvicorn)
-      ├── REST routes  (/health, /api/*)
+      ├── REST routes  (/health, /api/*, /api/regime)
       ├── WebSocket    (/ws)
       └── Static files (/static/index.html — live dashboard)
 ```
+
+### Regime Master (Option B)
+
+The `RegimeMaster` is the top-level intelligence that ensures all 4 exchange bots quote with a **single coherent view** of the market regime:
+
+| Regime | Behaviour |
+|---|---|
+| `RANGING` | Tight spreads (×1.0), full depth (×1.0), high aggressiveness (0.8) — best for MM |
+| `TRENDING` | Wider spreads (×1.5), reduced depth (×0.7), lean inventory with trend |
+| `HIGH_VOL` | Very wide spreads (×3.0), minimal depth (×0.3), near-passive (agg=0.1) |
+| `THIN_BOOK` | Wide spreads (×2.0), half depth (×0.5), fully passive (agg=0.0) |
+
+When HMM and Zhang-Zhang disagree, conservative parameters are applied automatically.
 
 ### Module Map
 
@@ -94,8 +114,10 @@ main.py
 | `exchange/factory.py` | `create_connector()` factory — swap CCXT for C++ here |
 | `quant/volatility.py` | Rolling std-dev + Zhang-Zhang OHLCV estimator; regime detection |
 | `quant/aggressiveness.py` | Maps volatility to aggressiveness [0.0, 1.0] via power-curve |
-| `quant/spread_engine.py` | Computes bid/ask price levels per the Huy Meta Config V1 model |
-| `quant/depth_engine.py` | Distributes USD budget across levels (geometric decay blended with equal) |
+| `quant/regime_detector.py` | HMM regime detector (RANGING/TRENDING/HIGH_VOL/THIN_BOOK) with Baum-Welch training |
+| `quant/spread_engine.py` | Computes bid/ask price levels per the Huy Meta Config V1 model; accepts `spread_mult` |
+| `quant/depth_engine.py` | Distributes USD budget across levels (geometric decay blended with equal); accepts `depth_mult` |
+| `core/regime_master.py` | RegimeMaster: reconciles HMM + ZZ, broadcasts unified RegimeState to all bots |
 | `safety/q_switch.py` | Emergency stop; triggers on low balance or manual API call; sends webhook alert |
 | `safety/circuit_breaker.py` | Daily P&L and drawdown tracking; halts trading when thresholds are hit |
 | `safety/heartbeat.py` | Detects tick loop stalls; triggers Q-Switch after N missed beats |
@@ -306,6 +328,7 @@ The FastAPI server runs on `http://localhost:8000` by default. Interactive docs 
 |---|---|---|
 | GET | `/api/balances` | All exchange balances with drift percentages and skew factors |
 | GET | `/api/metrics` | Aggregate metrics: global_mid, volatility, aggressiveness, fill_rate_1m, pnl_1h, total_open_orders |
+| GET | `/api/regime` | Current unified RegimeState: regime, confidence, zz_regime, agreement, mm_params |
 
 ### Control
 

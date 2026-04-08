@@ -42,6 +42,7 @@ class SpreadEngine:
         self,
         aggressiveness: float,
         n_levels: int,
+        spread_mult: float = 1.0,
     ) -> tuple[list[float], list[float]]:
         """
         Compute buy and sell spread levels.
@@ -49,6 +50,8 @@ class SpreadEngine:
         Args:
             aggressiveness: float ∈ [0.0, 1.0]
             n_levels: number of price levels per side
+            spread_mult: regime multiplier for spread width (>1.0 widens spreads).
+                         Supplied by the ExchangeBot from RegimeState.mm_params.
 
         Returns:
             (buy_spreads, sell_spreads): two lists of length n_levels
@@ -58,15 +61,23 @@ class SpreadEngine:
                           index 0 = tightest (closest to mid)
         """
         agg = clip(aggressiveness, 0.0, 1.0)
+        mult = max(0.1, float(spread_mult))
+
+        # Apply spread_mult by scaling the tightest/widest boundaries
+        buy_tightest = self.cfg.buy_max_pct * mult   # e.g. -0.1% → -0.3% at mult=3
+        buy_widest   = self.cfg.buy_min_pct * mult   # e.g. -5.0% → -15% at mult=3
+        sell_tightest = self.cfg.sell_min_pct * mult
+        sell_widest   = self.cfg.sell_max_pct * mult
+
         buy = self._compute_side_levels(
-            tightest=self.cfg.buy_max_pct,   # e.g. -0.1% (closest to mid)
-            widest=self.cfg.buy_min_pct,     # e.g. -5.0% (furthest from mid)
+            tightest=buy_tightest,
+            widest=buy_widest,
             agg=agg,
             n=n_levels,
         )
         sell = self._compute_side_levels(
-            tightest=self.cfg.sell_min_pct,  # e.g. +0.3%
-            widest=self.cfg.sell_max_pct,    # e.g. +7.0%
+            tightest=sell_tightest,
+            widest=sell_widest,
             agg=agg,
             n=n_levels,
         )
@@ -195,32 +206,37 @@ class SpreadEngine:
         sell_curve_strength: float,
         buy_min_step: float = 0.0,
         sell_min_step: float = 0.0,
+        spread_mult: float = 1.0,
     ) -> tuple[list[float], list[float]]:
         """
         Compute spread levels with full per-side control.
 
         Extends ``compute_levels_dual`` with independent level counts,
-        curve strengths, and minimum step enforcement per side.
+        curve strengths, minimum step enforcement per side, and regime
+        spread_mult from the RegimeMaster (Option B).
 
         Args:
             buy_agg / sell_agg: aggressiveness per side ∈ [0, 1]
             buy_levels / sell_levels: number of orders per side
             buy_curve_strength / sell_curve_strength: power-curve exponent per side
             buy_min_step / sell_min_step: minimum % gap between consecutive levels
+            spread_mult: regime multiplier for spread width (>1.0 widens spreads).
+                         Supplied by ExchangeBot from RegimeState.mm_params.
 
         Returns:
             (buy_spreads, sell_spreads) — lists may have different lengths.
         """
+        mult = max(0.1, float(spread_mult))
         buy = self._compute_side_levels(
-            tightest=self.cfg.buy_max_pct,
-            widest=self.cfg.buy_min_pct,
+            tightest=self.cfg.buy_max_pct * mult,
+            widest=self.cfg.buy_min_pct * mult,
             agg=clip(buy_agg, 0.0, 1.0),
             n=buy_levels,
             curve_strength=buy_curve_strength,
         )
         sell = self._compute_side_levels(
-            tightest=self.cfg.sell_min_pct,
-            widest=self.cfg.sell_max_pct,
+            tightest=self.cfg.sell_min_pct * mult,
+            widest=self.cfg.sell_max_pct * mult,
             agg=clip(sell_agg, 0.0, 1.0),
             n=sell_levels,
             curve_strength=sell_curve_strength,
