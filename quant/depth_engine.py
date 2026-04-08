@@ -38,6 +38,7 @@ class DepthEngine:
         n_levels: int,
         skew_factor: float = 1.0,
         side: str = "buy",
+        depth_mult: float = 1.0,
     ) -> list[float]:
         """
         Compute USD amounts for each order level.
@@ -49,6 +50,8 @@ class DepthEngine:
                 > 1.0 → increase buy budget (token deficit, need to buy more)
                 < 1.0 → increase sell budget (token surplus, need to sell more)
             side: "buy" | "sell"
+            depth_mult: regime multiplier for order size (< 1.0 reduces size in risky regimes).
+                        Supplied by the ExchangeBot from RegimeState.mm_params.
 
         Returns:
             list[float]: USD amount per level, length n_levels
@@ -56,6 +59,7 @@ class DepthEngine:
         """
         agg = clip(aggressiveness, 0.0, 1.0)
         n = n_levels
+        mult = max(0.0, float(depth_mult))
 
         # Passive distribution: geometric decay (most size near mid = level 0)
         passive = geometric_decay(n, decay=0.8)
@@ -67,8 +71,8 @@ class DepthEngine:
         blend = agg ** self.cfg.curve_strength
         ratio = (1.0 - blend) * passive + blend * equal
 
-        # Total budget for this side, adjusted by inventory skew
-        half_budget = self.cfg.total_budget_usd / 2.0
+        # Total budget for this side, adjusted by inventory skew and regime depth_mult
+        half_budget = self.cfg.total_budget_usd / 2.0 * mult
         if side == "buy":
             side_budget = half_budget * clip(skew_factor, 0.5, 2.0)
         else:
@@ -79,9 +83,11 @@ class DepthEngine:
         # Apply minimum order size
         amounts = np.maximum(raw_amounts, self.cfg.min_order_usd)
 
-        # Renormalize to respect side budget after min_order_usd clamp
+        # Renormalize to respect side budget after min_order_usd clamp,
+        # then re-apply the minimum to prevent floating-point drift below min.
         if amounts.sum() > 0:
             amounts = amounts * (side_budget / amounts.sum())
+        amounts = np.maximum(amounts, self.cfg.min_order_usd)
 
         return amounts.tolist()
 

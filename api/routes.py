@@ -126,6 +126,33 @@ async def get_balances(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Regime
+# ---------------------------------------------------------------------------
+
+@router.get("/api/regime")
+async def get_regime(request: Request):
+    """
+    Return the current unified RegimeState from the Regime Master.
+
+    Part of Meridian's Option B hierarchical architecture.
+    The RegimeMaster reconciles HMM and Zhang-Zhang classifiers into
+    a single coherent regime view for all exchange bots.
+    """
+    orch = get_orchestrator(request)
+    rs = orch.regime_master.current_regime_state
+    if rs is None:
+        raise HTTPException(status_code=503, detail="Regime state not yet available")
+    return {
+        "regime": rs.regime,
+        "confidence": round(rs.confidence, 4),
+        "zz_regime": rs.zz_regime,
+        "agreement": rs.agreement,
+        "mm_params": rs.mm_params,
+        "timestamp": rs.timestamp,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
 

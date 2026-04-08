@@ -7,20 +7,25 @@ Responsibilities:
    (weights are normalised if one or more exchanges fail to respond)
 3. Feeds global_mid into the shared VolatilityEngine
 4. Computes aggressiveness via AggressivenessModel
-5. Distributes GlobalState to all ExchangeBot queues (put_nowait, drop if full)
-6. Handles config hot-reload via asyncio.Event (triggered by PUT /api/config)
-7. Manages bot lifecycle (start, stop, emergency_stop all)
+5. Runs the RegimeMaster (Option B hierarchical architecture) which:
+   - Runs the HMM regime detector continuously
+   - Cross-checks with Zhang-Zhang classifier
+   - Broadcasts unified RegimeState to all ExchangeBots
+6. Distributes GlobalState to all ExchangeBot queues (put_nowait, drop if full)
+7. Handles config hot-reload via asyncio.Event (triggered by PUT /api/config)
+8. Manages bot lifecycle (start, stop, emergency_stop all)
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from config.schema import BotConfig
 from core.exchange_bot import ExchangeBot
 from core.inventory_tracker import InventoryTracker
+from core.regime_master import RegimeMaster, RegimeState
 from db.database import Database
 from exchange.base import BaseConnector
 from exchange.factory import create_connector
@@ -51,6 +56,7 @@ class GlobalState:
     zz_regime: str
     timestamp: float
     contributing_exchanges: list[str] = field(default_factory=list)
+    regime_state: Optional[RegimeState] = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +84,14 @@ class Orchestrator:
         self.vol_engine = VolatilityEngine(config.volatility)
         self.agg_model = AggressivenessModel(config.volatility)
 
+        # Regime Master — single unified regime source for all exchange bots (Option B)
+        self.regime_master = RegimeMaster()
+
         # Per-exchange connectors and bots (built in start())
         self._connectors: dict[str, BaseConnector] = {}
         self._bots: dict[str, ExchangeBot] = {}
         self._bot_queues: dict[str, asyncio.Queue] = {}
+        self._regime_queues: dict[str, asyncio.Queue] = {}
         self._tasks: list[asyncio.Task] = []
 
         # Config hot-reload
@@ -117,6 +127,10 @@ class Orchestrator:
             q: asyncio.Queue = asyncio.Queue(maxsize=5)
             self._bot_queues[ex_cfg.exchange] = q
 
+            regime_q: asyncio.Queue = asyncio.Queue(maxsize=5)
+            self._regime_queues[ex_cfg.exchange] = regime_q
+            self.regime_master.add_subscriber(regime_q)
+
             bot = ExchangeBot(
                 config=ex_cfg,
                 connector=connector,
@@ -125,6 +139,7 @@ class Orchestrator:
                 live_feed=self.live_feed,
                 agg_model=self.agg_model,
                 live_mode=self.live_mode and not self.config.dry_run,
+                regime_queue=regime_q,
             )
 
             # Apply configured initial balances if present
@@ -143,17 +158,22 @@ class Orchestrator:
         price_task = asyncio.create_task(self._price_loop(), name="price_loop")
         self._tasks.append(price_task)
 
+        # Start the Regime Master (Option B hierarchical architecture)
+        regime_task = self.regime_master.start_task()
+        self._tasks.append(regime_task)
+
         log.info("orchestrator_started", exchanges=list(self._bots.keys()))
 
         # Wait for all tasks
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def stop(self) -> None:
-        """Gracefully stop all bots and the price loop."""
+        """Gracefully stop all bots, the price loop, and the regime master."""
         log.info("orchestrator_stopping")
         self._running = False
         for bot in self._bots.values():
             await bot.stop()
+        await self.regime_master.stop()
         for task in self._tasks:
             task.cancel()
         self._tasks.clear()
@@ -252,6 +272,9 @@ class Orchestrator:
         zz_vol, zz_regime = self.vol_engine.zhang_zhang_vol()
         agg = self.agg_model.compute(vol)
 
+        # Capture the latest regime state from the Regime Master
+        current_regime_state = self.regime_master.current_regime_state
+
         state = GlobalState(
             global_mid=global_mid,
             volatility=vol,
@@ -260,10 +283,14 @@ class Orchestrator:
             zz_regime=zz_regime,
             timestamp=now_s(),
             contributing_exchanges=list(valid.keys()),
+            regime_state=current_regime_state,
         )
 
         async with self._state_lock:
             self._state = state
+
+        # Push raw market data to the Regime Master for HMM update
+        self.regime_master.push_state(state)
 
         # Distribute to all bot queues (drop if bot is behind)
         for name, q in self._bot_queues.items():
