@@ -14,6 +14,7 @@ At agg=1 (aggressive mode): equal amounts at every level — incentivises tradin
   by showing large depth uniformly.
 
 skew_factor adjusts total budget between buy and sell sides based on inventory drift.
+depth_mult (regime multiplier from RegimeMaster) scales total budget up/down.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ class DepthEngine:
         skew_factor: float = 1.0,
         side: str = "buy",
         min_step_usd: float = 0.0,
+        depth_mult: float = 1.0,
     ) -> list[float]:
         """
         Compute USD amounts for each order level.
@@ -52,6 +54,8 @@ class DepthEngine:
             side: "buy" | "sell"
             min_step_usd: minimum USD decrement between consecutive levels
                 (level 0 = largest). 0.0 = disabled.
+            depth_mult: regime multiplier for order size (< 1.0 reduces size in risky regimes).
+                        Supplied by the ExchangeBot from RegimeState.mm_params.
 
         Returns:
             list[float]: USD amount per level, length n_levels
@@ -59,6 +63,7 @@ class DepthEngine:
         """
         agg = clip(aggressiveness, 0.0, 1.0)
         n = n_levels
+        mult = max(0.0, float(depth_mult))
 
         # Passive distribution: geometric decay (most size near mid = level 0)
         passive = geometric_decay(n, decay=0.8)
@@ -70,8 +75,8 @@ class DepthEngine:
         blend = agg ** self.cfg.curve_strength
         ratio = (1.0 - blend) * passive + blend * equal
 
-        # Total budget for this side, adjusted by inventory skew
-        half_budget = self.cfg.total_budget_usd / 2.0
+        # Total budget for this side, adjusted by inventory skew and regime depth_mult
+        half_budget = self.cfg.total_budget_usd / 2.0 * mult
         if side == "buy":
             side_budget = half_budget * clip(skew_factor, 0.5, 2.0)
         else:
@@ -97,6 +102,9 @@ class DepthEngine:
             # Only apply the scale if every level still meets min_order after scaling
             if float(scaled.min()) >= self.cfg.min_order_usd:
                 amounts = scaled
+
+        # Final safety floor to prevent floating-point drift below min_order_usd
+        amounts = np.maximum(amounts, self.cfg.min_order_usd)
 
         return amounts.tolist()
 
