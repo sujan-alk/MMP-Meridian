@@ -99,9 +99,8 @@ class TestDryRunMode:
         """Dry-run orders should be persisted to the database."""
         grid = make_grid()
         await order_manager.diff_and_repost(grid)
-        async with db.conn.execute("SELECT COUNT(*) FROM orders") as cursor:
-            row = await cursor.fetchone()
-            assert row[0] == 6
+        count = await db.fetchval("SELECT COUNT(*) FROM orders")
+        assert count == 6
 
 
 class TestDiffAndRepost:
@@ -186,11 +185,8 @@ class TestCancelAll:
         await order_manager.diff_and_repost(grid)
         await order_manager.cancel_all()
 
-        async with db.conn.execute(
-            "SELECT COUNT(*) FROM orders WHERE status = 'canceled'"
-        ) as cursor:
-            row = await cursor.fetchone()
-            assert row[0] == 6
+        count = await db.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'canceled'")
+        assert count == 6
 
     @pytest.mark.asyncio
     async def test_cancel_all_dry_run_no_exchange_call(self, order_manager, mock_connector):

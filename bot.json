@@ -10,7 +10,19 @@
     "window_minutes": 10,
     "low_threshold": 0.001,
     "high_threshold": 0.003,
-    "power": 2.0
+    "power": 2.0,
+    "hmm": {
+      "enabled": true,
+      "hmm_lookback": 30,
+      "hmm_min_observations": 10,
+      "refit_interval": 100,
+      "crash_buy_agg_floor": 0.6,
+      "crash_sell_agg_ceiling": 0.1,
+      "crash_buy_depth_multiplier": 1.5,
+      "crash_sell_depth_factor": 0.3,
+      "recovery_buy_agg_boost": 1.2,
+      "recovery_sell_agg_dampen": 0.7
+    }
   },
   "exchanges": [
     {
@@ -32,11 +44,11 @@
         "min_order_usd": 5.0
       },
       "safety": {
-        "min_balance_usd": 50.0,
-        "min_balance_token": 100.0,
+        "min_balance_usd": 0.0,
+        "min_balance_token": 0.0,
         "max_requests_per_second": 8,
         "heartbeat_interval_s": 5.0,
-        "max_missed_heartbeats": 3,
+        "max_missed_heartbeats": 6,
         "max_daily_loss_pct": 10.0,
         "max_drawdown_pct": 15.0
       }
@@ -60,11 +72,11 @@
         "min_order_usd": 5.0
       },
       "safety": {
-        "min_balance_usd": 50.0,
-        "min_balance_token": 100.0,
+        "min_balance_usd": 0.0,
+        "min_balance_token": 0.0,
         "max_requests_per_second": 8,
         "heartbeat_interval_s": 5.0,
-        "max_missed_heartbeats": 3,
+        "max_missed_heartbeats": 6,
         "max_daily_loss_pct": 10.0,
         "max_drawdown_pct": 15.0
       }
@@ -88,11 +100,11 @@
         "min_order_usd": 5.0
       },
       "safety": {
-        "min_balance_usd": 25.0,
-        "min_balance_token": 50.0,
+        "min_balance_usd": 0.0,
+        "min_balance_token": 0.0,
         "max_requests_per_second": 6,
         "heartbeat_interval_s": 5.0,
-        "max_missed_heartbeats": 3,
+        "max_missed_heartbeats": 6,
         "max_daily_loss_pct": 10.0,
         "max_drawdown_pct": 15.0
       }
@@ -116,11 +128,11 @@
         "min_order_usd": 5.0
       },
       "safety": {
-        "min_balance_usd": 25.0,
-        "min_balance_token": 50.0,
+        "min_balance_usd": 0.0,
+        "min_balance_token": 0.0,
         "max_requests_per_second": 6,
         "heartbeat_interval_s": 5.0,
-        "max_missed_heartbeats": 3,
+        "max_missed_heartbeats": 6,
         "max_daily_loss_pct": 10.0,
         "max_drawdown_pct": 15.0
       }

@@ -54,6 +54,32 @@ class DepthConfig(BaseModel):
     min_step_usd: float = Field(default=0.0, ge=0.0, description="Min USD decrement between consecutive levels (0 = disabled)")
 
 
+class HMMConfig(BaseModel):
+    """Configuration for the Baum-Welch HMM regime detector."""
+    enabled: bool = Field(default=True, description="Enable HMM regime detection")
+    hmm_lookback: int = Field(default=30, ge=10, le=120, description="Observation buffer size (candle periods)")
+    hmm_min_observations: int = Field(default=10, ge=3, le=30, description="Min observations before HMM is ready")
+    refit_interval: int = Field(default=100, ge=50, le=500, description="Re-run Baum-Welch every N observations")
+    crash_buy_agg_floor: float = Field(
+        default=0.6, ge=0.1, le=1.0,
+        description="Minimum buy aggressiveness during HIGH_VOL_CRASH (never go passive on buys)"
+    )
+    crash_sell_agg_ceiling: float = Field(
+        default=0.1, ge=0.0, le=0.5,
+        description="Maximum sell aggressiveness during HIGH_VOL_CRASH"
+    )
+    crash_buy_depth_multiplier: float = Field(
+        default=1.5, ge=1.0, le=3.0,
+        description="Multiply buy-side depth budget during crash to provide absorptive floor"
+    )
+    crash_sell_depth_factor: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        description="Scale sell-side depth during crash (0.3 = 30% of normal)"
+    )
+    recovery_buy_agg_boost: float = Field(default=1.2, ge=1.0, le=2.0)
+    recovery_sell_agg_dampen: float = Field(default=0.7, ge=0.3, le=1.0)
+
+
 class VolatilityConfig(BaseModel):
     """Controls the rolling volatility window and aggressiveness mapping."""
     window_minutes: int = Field(default=10, ge=1, le=60)
@@ -81,6 +107,7 @@ class VolatilityConfig(BaseModel):
         default=0.0005, ge=0,
         description="Mean candle direction below this → choppy regime"
     )
+    hmm: HMMConfig = Field(default_factory=HMMConfig)
 
     @field_validator("high_threshold")
     @classmethod

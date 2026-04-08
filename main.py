@@ -2,7 +2,7 @@
 ALKIMI Market Making Bot — entry point.
 
 Starts:
-1. SQLite database
+1. PostgreSQL database (Supabase)
 2. LiveFeed (WebSocket broadcaster)
 3. Orchestrator (4 exchange bots + global price loop)
 4. FastAPI + uvicorn server
@@ -62,7 +62,7 @@ async def main() -> None:
     )
 
     # Initialise shared services
-    db = Database(settings.db_path)
+    db = Database(settings.supabase_db_url)
     await db.connect()
 
     live_feed = LiveFeed()

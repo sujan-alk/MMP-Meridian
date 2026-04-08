@@ -68,7 +68,7 @@ class RuntimeSettings(BaseSettings):
 
     live_mode: bool = Field(default=False, description="Set LIVE_MODE=true to place real orders")
     port: int = Field(default=8000)
-    db_path: str = Field(default="data/mm_bot.db")
+    supabase_db_url: str = Field(default="", description="Postgres connection string for Supabase (or any Postgres instance)")
     bot_config_path: str = Field(default="bot.json")
     log_level: str = Field(default="INFO")
     alert_webhook_url: str | None = Field(default=None)

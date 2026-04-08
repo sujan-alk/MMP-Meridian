@@ -1,72 +1,115 @@
 """
-SQLite schema migrations.
+PostgreSQL schema migrations.
 Runs on startup via database.py.
+Each statement is executed individually (asyncpg does not support multi-statement execution).
+
+All tables live in the 'mm_bot' schema to keep them isolated from other
+tables in the same database (e.g. shared Supabase project).
 """
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS orders (
-    id              TEXT PRIMARY KEY,
-    exchange        TEXT NOT NULL,
-    symbol          TEXT NOT NULL,
-    side            TEXT NOT NULL,     -- 'buy' | 'sell'
-    price           REAL NOT NULL,
-    amount          REAL NOT NULL,     -- token amount
-    amount_usd      REAL NOT NULL,     -- USD equivalent at placement
-    status          TEXT NOT NULL,     -- 'open' | 'filled' | 'canceled' | 'partial'
-    placed_at       REAL NOT NULL,     -- Unix timestamp (seconds)
-    updated_at      REAL NOT NULL
-);
+SCHEMA_NAME = "mm_bot"
 
-CREATE INDEX IF NOT EXISTS idx_orders_exchange ON orders(exchange);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_placed_at ON orders(placed_at);
+SCHEMA_STATEMENTS: list[str] = [
+    # ------------------------------------------------------------------
+    # Schema
+    # ------------------------------------------------------------------
+    f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}",
 
-CREATE TABLE IF NOT EXISTS fills (
-    id              TEXT PRIMARY KEY,
-    order_id        TEXT NOT NULL,
-    exchange        TEXT NOT NULL,
-    symbol          TEXT NOT NULL,
-    side            TEXT NOT NULL,
-    filled_price    REAL NOT NULL,
-    filled_amount   REAL NOT NULL,
-    fee             REAL NOT NULL,
-    fee_currency    TEXT NOT NULL,
-    filled_at       REAL NOT NULL,     -- Unix timestamp (seconds)
-    pnl_usd         REAL              -- Realized P&L if calculable (nullable)
-);
+    # ------------------------------------------------------------------
+    # Orders
+    # ------------------------------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.orders (
+        id              TEXT PRIMARY KEY,
+        exchange        TEXT NOT NULL,
+        symbol          TEXT NOT NULL,
+        side            TEXT NOT NULL,
+        price           DOUBLE PRECISION NOT NULL,
+        amount          DOUBLE PRECISION NOT NULL,
+        amount_usd      DOUBLE PRECISION NOT NULL,
+        status          TEXT NOT NULL,
+        placed_at       DOUBLE PRECISION NOT NULL,
+        updated_at      DOUBLE PRECISION NOT NULL
+    )
+    """,
+    f"CREATE INDEX IF NOT EXISTS idx_orders_exchange ON {SCHEMA_NAME}.orders(exchange)",
+    f"CREATE INDEX IF NOT EXISTS idx_orders_status ON {SCHEMA_NAME}.orders(status)",
+    f"CREATE INDEX IF NOT EXISTS idx_orders_placed_at ON {SCHEMA_NAME}.orders(placed_at)",
 
-CREATE INDEX IF NOT EXISTS idx_fills_exchange ON fills(exchange);
-CREATE INDEX IF NOT EXISTS idx_fills_filled_at ON fills(filled_at);
+    # ------------------------------------------------------------------
+    # Fills
+    # ------------------------------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.fills (
+        id              TEXT PRIMARY KEY,
+        order_id        TEXT NOT NULL,
+        exchange        TEXT NOT NULL,
+        symbol          TEXT NOT NULL,
+        side            TEXT NOT NULL,
+        filled_price    DOUBLE PRECISION NOT NULL,
+        filled_amount   DOUBLE PRECISION NOT NULL,
+        fee             DOUBLE PRECISION NOT NULL,
+        fee_currency    TEXT NOT NULL,
+        filled_at       DOUBLE PRECISION NOT NULL,
+        pnl_usd         DOUBLE PRECISION
+    )
+    """,
+    f"CREATE INDEX IF NOT EXISTS idx_fills_exchange ON {SCHEMA_NAME}.fills(exchange)",
+    f"CREATE INDEX IF NOT EXISTS idx_fills_filled_at ON {SCHEMA_NAME}.fills(filled_at)",
 
-CREATE TABLE IF NOT EXISTS inventory_snapshots (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    exchange            TEXT NOT NULL,
-    usd                 REAL NOT NULL,
-    token               REAL NOT NULL,
-    global_mid          REAL NOT NULL,
-    volatility          REAL NOT NULL,
-    aggressiveness      REAL NOT NULL,
-    skew_factor         REAL NOT NULL,
-    snapshot_at         REAL NOT NULL
-);
+    # ------------------------------------------------------------------
+    # Inventory snapshots
+    # ------------------------------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.inventory_snapshots (
+        id                  SERIAL PRIMARY KEY,
+        exchange            TEXT NOT NULL,
+        usd                 DOUBLE PRECISION NOT NULL,
+        token               DOUBLE PRECISION NOT NULL,
+        global_mid          DOUBLE PRECISION NOT NULL,
+        volatility          DOUBLE PRECISION NOT NULL,
+        aggressiveness      DOUBLE PRECISION NOT NULL,
+        skew_factor         DOUBLE PRECISION NOT NULL,
+        snapshot_at         DOUBLE PRECISION NOT NULL
+    )
+    """,
+    f"CREATE INDEX IF NOT EXISTS idx_snapshots_exchange ON {SCHEMA_NAME}.inventory_snapshots(exchange)",
+    f"CREATE INDEX IF NOT EXISTS idx_snapshots_at ON {SCHEMA_NAME}.inventory_snapshots(snapshot_at)",
 
-CREATE INDEX IF NOT EXISTS idx_snapshots_exchange ON inventory_snapshots(exchange);
-CREATE INDEX IF NOT EXISTS idx_snapshots_at ON inventory_snapshots(snapshot_at);
+    # ------------------------------------------------------------------
+    # RL features
+    # ------------------------------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.rl_features (
+        id              SERIAL PRIMARY KEY,
+        timestamp       DOUBLE PRECISION NOT NULL,
+        vol_simple      DOUBLE PRECISION,
+        vol_zz          DOUBLE PRECISION,
+        zz_regime       TEXT,
+        hmm_regime      TEXT,
+        hmm_confidence  DOUBLE PRECISION,
+        aggressiveness  DOUBLE PRECISION,
+        global_mid      DOUBLE PRECISION,
+        buy_spread_l1   DOUBLE PRECISION,
+        sell_spread_l1  DOUBLE PRECISION,
+        skew_factor     DOUBLE PRECISION,
+        fill_rate_1m    DOUBLE PRECISION,
+        pnl_1h          DOUBLE PRECISION
+    )
+    """,
+    f"CREATE INDEX IF NOT EXISTS idx_rl_features_ts ON {SCHEMA_NAME}.rl_features(timestamp)",
 
-CREATE TABLE IF NOT EXISTS rl_features (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp       REAL NOT NULL,
-    vol_simple      REAL,
-    vol_zz          REAL,
-    zz_regime       TEXT,
-    aggressiveness  REAL,
-    global_mid      REAL,
-    buy_spread_l1   REAL,    -- tightest buy spread %
-    sell_spread_l1  REAL,    -- tightest sell spread %
-    skew_factor     REAL,
-    fill_rate_1m    REAL,    -- fills per minute (rolling)
-    pnl_1h          REAL     -- rolling 1-hour realized P&L
-);
-
-CREATE INDEX IF NOT EXISTS idx_rl_features_ts ON rl_features(timestamp);
-"""
+    # Migration: add hmm columns to existing rl_features tables
+    f"""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = '{SCHEMA_NAME}' AND table_name = 'rl_features' AND column_name = 'hmm_regime'
+        ) THEN
+            ALTER TABLE {SCHEMA_NAME}.rl_features ADD COLUMN hmm_regime TEXT;
+            ALTER TABLE {SCHEMA_NAME}.rl_features ADD COLUMN hmm_confidence DOUBLE PRECISION;
+        END IF;
+    END $$
+    """,
+]

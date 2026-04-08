@@ -25,6 +25,7 @@ from db.database import Database
 from exchange.base import BaseConnector
 from exchange.factory import create_connector
 from quant.aggressiveness import AggressivenessModel
+from quant.hmm_regime import HMMRegimeDetector
 from quant.volatility import VolatilityEngine
 from utils.logging import get_logger
 from utils.time_utils import now_s
@@ -50,6 +51,8 @@ class GlobalState:
     aggressiveness: float
     zz_vol: float
     zz_regime: str
+    hmm_regime: str
+    hmm_regime_confidence: float
     timestamp: float
     contributing_exchanges: list[str] = field(default_factory=list)
 
@@ -78,6 +81,7 @@ class Orchestrator:
         # Shared quant models (volatility is global, aggressiveness uses global vol)
         self.vol_engine = VolatilityEngine(config.volatility)
         self.agg_model = AggressivenessModel(config.volatility)
+        self.hmm_detector = HMMRegimeDetector(config.volatility.hmm) if config.volatility.hmm.enabled else None
 
         # Per-exchange connectors and bots (built in start())
         self._connectors: dict[str, BaseConnector] = {}
@@ -183,6 +187,7 @@ class Orchestrator:
         # Rebuild quant models with new volatility config
         self.vol_engine = VolatilityEngine(new_config.volatility)
         self.agg_model = AggressivenessModel(new_config.volatility)
+        self.hmm_detector = HMMRegimeDetector(new_config.volatility.hmm) if new_config.volatility.hmm.enabled else None
         # Update per-bot configs
         for ex_cfg in new_config.enabled_exchanges():
             bot = self._bots.get(ex_cfg.exchange)
@@ -264,12 +269,23 @@ class Orchestrator:
         zz_vol, zz_regime = self.vol_engine.zhang_zhang_vol()
         agg = self.agg_model.compute(vol)
 
+        # HMM regime detection (runs on candle-derived features)
+        hmm_regime = "NORMAL"
+        hmm_confidence = 0.0
+        if self.hmm_detector is not None:
+            features = self.vol_engine.hmm_features()
+            if features is not None:
+                hmm_regime = self.hmm_detector.update(*features)
+                hmm_confidence = self.hmm_detector.confidence
+
         state = GlobalState(
             global_mid=global_mid,
             volatility=vol,
             aggressiveness=agg,
             zz_vol=zz_vol,
             zz_regime=zz_regime,
+            hmm_regime=hmm_regime,
+            hmm_regime_confidence=hmm_confidence,
             timestamp=now_s(),
             contributing_exchanges=list(valid.keys()),
         )

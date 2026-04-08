@@ -100,6 +100,8 @@ class LiveFeed:
         open_orders: int,
         placed_count: int,
         regime: str | None = None,
+        hmm_regime: str | None = None,
+        hmm_regime_confidence: float | None = None,
         buy_prices: list[float] | None = None,
         sell_prices: list[float] | None = None,
         buy_amounts: list[float] | None = None,
@@ -116,6 +118,9 @@ class LiveFeed:
         }
         if regime is not None:
             payload["regime"] = regime
+        if hmm_regime is not None:
+            payload["hmm_regime"] = hmm_regime
+            payload["hmm_regime_confidence"] = round(hmm_regime_confidence or 0.0, 4)
         if buy_prices is not None and buy_amounts is not None:
             payload["intended_buy_orders"] = [
                 {"price": round(p, 6), "usd": round(a, 2)}

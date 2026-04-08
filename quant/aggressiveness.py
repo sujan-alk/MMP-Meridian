@@ -80,3 +80,55 @@ class AggressivenessModel:
             sell_agg = base_agg
 
         return buy_agg, sell_agg
+
+    def compute_with_hmm_regime(
+        self,
+        vol: float,
+        zz_regime: str,
+        hmm_regime: str,
+        hmm_confidence: float,
+    ) -> tuple[float, float]:
+        """
+        Return (buy_agg, sell_agg) adjusted by both ZZ regime and HMM regime.
+
+        The HMM regime applies a secondary overlay on top of ZZ-regime adjustments.
+        At low confidence (<0.5), HMM adjustments blend toward neutral to avoid
+        false regime switches.
+
+        Critical behavior for HIGH_VOL_CRASH: buy-side aggressiveness is FLOORED
+        (never goes passive) to maintain absorptive liquidity during sell-offs.
+
+        Returns:
+            (buy_aggressiveness, sell_aggressiveness) both ∈ [0.0, 1.0]
+        """
+        # Start from ZZ-regime adjusted values
+        zz_buy, zz_sell = self.compute_with_regime(vol, zz_regime)
+        hmm_cfg = self.cfg.hmm
+
+        if hmm_regime == "LOW_VOL":
+            buy_agg = zz_buy * 1.1
+            sell_agg = zz_sell * 1.1
+        elif hmm_regime == "HIGH_VOL":
+            buy_agg = zz_buy * 0.7
+            sell_agg = zz_sell * 0.6
+        elif hmm_regime == "HIGH_VOL_CRASH":
+            # CRITICAL: floor buy-side, ceiling sell-side.
+            # Normal vol→agg drives both to ~0 in crashes. The floor guarantees
+            # buy-side presence to absorb selling pressure and slow cascading.
+            buy_agg = max(zz_buy, hmm_cfg.crash_buy_agg_floor)
+            sell_agg = min(zz_sell, hmm_cfg.crash_sell_agg_ceiling)
+        elif hmm_regime == "RECOVERY":
+            buy_agg = zz_buy * hmm_cfg.recovery_buy_agg_boost
+            sell_agg = zz_sell * hmm_cfg.recovery_sell_agg_dampen
+        else:
+            # NORMAL or unknown — pass through ZZ values
+            return zz_buy, zz_sell
+
+        # Confidence blending: at low confidence, lerp back toward ZZ-only values
+        # to avoid false regime switches jerking aggressiveness
+        if hmm_confidence < 0.5:
+            blend = hmm_confidence / 0.5
+            buy_agg = zz_buy + blend * (buy_agg - zz_buy)
+            sell_agg = zz_sell + blend * (sell_agg - zz_sell)
+
+        return clip(buy_agg, 0.0, 1.0), clip(sell_agg, 0.0, 1.0)

@@ -166,15 +166,25 @@ def bot_config(volatility_config, exchange_bot_config) -> BotConfig:
 
 
 # ---------------------------------------------------------------------------
-# Database fixture (in-memory)
+# Database fixture (Postgres test database)
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def db():
-    """Provide an in-memory async SQLite database with schema applied."""
-    database = Database(":memory:")
+    """Provide an async Postgres database with schema applied.
+
+    Set TEST_DATABASE_URL in your environment to point at a test Postgres instance.
+    Tables are truncated between tests for isolation.
+    """
+    import os
+    url = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/mm_bot_test")
+    database = Database(url)
     await database.connect()
     yield database
+    # Clean up all tables between tests (order matters for foreign key safety)
+    from db.migrations import SCHEMA_NAME
+    for table in ["rl_features", "inventory_snapshots", "fills", "orders"]:
+        await database.execute(f"TRUNCATE {SCHEMA_NAME}.{table} CASCADE")
     await database.disconnect()
 
 

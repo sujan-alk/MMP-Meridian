@@ -37,6 +37,8 @@ class VolatilityEngine:
         # Candle buffer for Zhang-Zhang (1-minute candles)
         self._candles: deque[Candle] = deque(maxlen=config.window_minutes + 5)
         self._last_update_s: float = 0.0
+        # Cached intermediate values for HMM features
+        self._last_net_direction: float = 0.0
 
     # ------------------------------------------------------------------
     # Updates
@@ -131,6 +133,7 @@ class VolatilityEngine:
         zz_vol = math.sqrt(max(zz_variance, 0.0))
 
         net = float(np.mean(net_co))
+        self._last_net_direction = net
         trending_threshold = getattr(self.cfg, 'trending_threshold', 0.0015)
         choppy_threshold = getattr(self.cfg, 'choppy_threshold', 0.0005)
         if net > trending_threshold:
@@ -143,6 +146,46 @@ class VolatilityEngine:
             regime = "choppy"
 
         return zz_vol, regime
+
+    # ------------------------------------------------------------------
+    # HMM feature extraction
+    # ------------------------------------------------------------------
+
+    def hmm_features(self) -> tuple[float, float, float, float] | None:
+        """
+        Extract the 4D observation vector for the HMM regime detector.
+
+        Returns:
+            (zz_vol, net_direction, volume_change_ratio, price_roc) or None
+            if insufficient candle data.
+        """
+        candles = list(self._candles)
+        if len(candles) < 3:
+            return None
+
+        # zz_vol — already computed, reuse last call result via zhang_zhang_vol()
+        zz_vol, _ = self.zhang_zhang_vol()
+
+        # net_direction — cached from zhang_zhang_vol()
+        net_direction = self._last_net_direction
+
+        # volume_change — normalised deviation from mean volume
+        volumes = [c.volume for c in candles if c.volume > 0]
+        if len(volumes) >= 2:
+            mean_vol = float(np.mean(volumes[:-1]))  # all except latest
+            latest_vol = volumes[-1]
+            volume_change = (latest_vol - mean_vol) / mean_vol if mean_vol > 0 else 0.0
+        else:
+            volume_change = 0.0
+
+        # price_roc — rate of close-price change over the candle buffer
+        closes = [c.close for c in candles if c.close > 0]
+        if len(closes) >= 2:
+            price_roc = (closes[-1] - closes[0]) / closes[0]
+        else:
+            price_roc = 0.0
+
+        return zz_vol, net_direction, volume_change, price_roc
 
     # ------------------------------------------------------------------
     # Properties

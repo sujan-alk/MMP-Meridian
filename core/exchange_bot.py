@@ -163,9 +163,16 @@ class ExchangeBot:
         # 4. Compute order grid using the quant model
         # Base aggressiveness scaling (Huy formula):
         # scale raw values by user-defined ceiling (default 1.0 = no change)
-        raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_regime(
-            state.volatility, state.zz_regime
-        )
+        # Use HMM-enhanced aggressiveness when HMM regime is active
+        if state.hmm_regime and state.hmm_regime != "NORMAL":
+            raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_hmm_regime(
+                state.volatility, state.zz_regime,
+                state.hmm_regime, state.hmm_regime_confidence,
+            )
+        else:
+            raw_buy_agg, raw_sell_agg = self.agg_model.compute_with_regime(
+                state.volatility, state.zz_regime
+            )
         base = self.agg_model.cfg.base_aggressiveness
         buy_agg = raw_buy_agg * base
         sell_agg = raw_sell_agg * base
@@ -208,6 +215,18 @@ class ExchangeBot:
             sell_agg, sell_n, skew, "sell",
             min_step_usd=self.config.depth.min_step_usd,
         )
+
+        # HIGH_VOL_CRASH: shift capital from sell to buy side for absorptive floor
+        if state.hmm_regime == "HIGH_VOL_CRASH":
+            hmm_cfg = self.agg_model.cfg.hmm
+            buy_usd_amounts = [amt * hmm_cfg.crash_buy_depth_multiplier for amt in buy_usd_amounts]
+            sell_usd_amounts = [amt * hmm_cfg.crash_sell_depth_factor for amt in sell_usd_amounts]
+            log.info(
+                "crash_depth_override",
+                exchange=self.exchange,
+                buy_multiplier=hmm_cfg.crash_buy_depth_multiplier,
+                sell_factor=hmm_cfg.crash_sell_depth_factor,
+            )
 
         buy_token_amounts = [
             self.depth_engine.usd_to_token_amount(usd, p)
@@ -259,6 +278,8 @@ class ExchangeBot:
                 skew_factor=skew,
                 fill_rate_1m=fill_rate,
                 pnl_1h=pnl_1h,
+                hmm_regime=state.hmm_regime,
+                hmm_confidence=state.hmm_regime_confidence,
             )
             self._last_rl_at = ts
 
@@ -272,6 +293,8 @@ class ExchangeBot:
             open_orders=self.order_manager.open_order_count,
             placed_count=len(placed),
             regime=state.zz_regime,
+            hmm_regime=state.hmm_regime,
+            hmm_regime_confidence=state.hmm_regime_confidence,
             buy_prices=buy_prices,
             sell_prices=sell_prices,
             buy_amounts=buy_usd_amounts,
@@ -372,6 +395,8 @@ class ExchangeBot:
             "volatility": state.volatility if state else None,
             "aggressiveness": state.aggressiveness if state else None,
             "zz_regime": state.zz_regime if state else None,
+            "hmm_regime": state.hmm_regime if state else None,
+            "hmm_regime_confidence": state.hmm_regime_confidence if state else None,
             "balance_usd": inv.usd,
             "balance_token": inv.token,
             "skew_factor": inv.skew_factor,
