@@ -28,7 +28,7 @@ log = get_logger("app")
 
 
 def create_app(
-    orchestrator: "Orchestrator",
+    orchestrator: "Orchestrator | None",
     db: "Database",
     live_feed: "LiveFeed",
 ) -> FastAPI:

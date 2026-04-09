@@ -136,8 +136,7 @@ class TestFillPersistence:
         assert len(fills) == 1
 
         # Query the DB directly
-        async with db._conn.execute("SELECT * FROM fills WHERE order_id = 'test-buy-1'") as cursor:
-            rows = await cursor.fetchall()
+        rows = await db.fetch("SELECT * FROM mm_bot.fills WHERE order_id = $1", "test-buy-1")
         assert len(rows) == 1
 
     @pytest.mark.asyncio
@@ -151,9 +150,8 @@ class TestFillPersistence:
         await paper_trader.on_book_update(book, [order1], current_mid=0.105)
         await paper_trader.on_book_update(book, [order2], current_mid=0.105)
 
-        async with db._conn.execute("SELECT COUNT(*) FROM fills") as cursor:
-            row = await cursor.fetchone()
-        assert row[0] >= 2
+        count = await db.fetchval("SELECT COUNT(*) FROM mm_bot.fills")
+        assert count >= 2
 
 
 # ---------------------------------------------------------------------------

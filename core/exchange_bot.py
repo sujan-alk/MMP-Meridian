@@ -75,6 +75,7 @@ class ExchangeBot:
         agg_model: AggressivenessModel,
         live_mode: bool = False,
         regime_queue: asyncio.Queue | None = None,
+        paper_trader: "PaperTrader | None" = None,
     ):
         self.config = config
         self.exchange = config.exchange
@@ -93,6 +94,9 @@ class ExchangeBot:
         self.depth_engine = DepthEngine(config.depth)
         self.agg_model = agg_model
         self.order_manager = OrderManager(connector, config, db, self.rate_limiter, live_mode)
+
+        # Paper trading: simulates fills against live order book in dry-run mode
+        self.paper_trader = paper_trader
 
         # Regime queue: receives RegimeState updates from the RegimeMaster (Option B)
         self.regime_queue: asyncio.Queue | None = regime_queue
@@ -277,6 +281,10 @@ class ExchangeBot:
 
         # 6. Diff-and-repost orders
         placed = await self.order_manager.diff_and_repost(grid)
+
+        # 6b. Push open orders to PaperTrader for simulated fill matching
+        if self.paper_trader is not None:
+            self.paper_trader.set_open_orders(self.order_manager.open_orders)
 
         # 7. Poll for fills periodically
         ts = now_s()

@@ -33,6 +33,7 @@ class EventType(str, Enum):
     CONFIG_RELOADED = "config_reloaded"
     BOT_STARTED = "bot_started"
     BOT_STOPPED = "bot_stopped"
+    ORDER_FILLED = "order_filled"
 
 
 class LiveFeed:
@@ -85,6 +86,28 @@ class LiveFeed:
                     dead.append(q)
             for q in dead:
                 self._clients.discard(q)
+
+    async def emit(self, event_name: str, data: Any) -> None:
+        """Generic emit: accepts a string event name and broadcasts to all clients."""
+        try:
+            event_type = EventType(event_name)
+        except ValueError:
+            # Unknown event type — broadcast raw
+            event_type = None
+        if event_type:
+            await self.broadcast(event_type, data)
+        else:
+            # Fallback: broadcast with raw string
+            if not self._clients:
+                return
+            import json as _json
+            message = _json.dumps({"event": event_name, "data": data, "timestamp": now_s()})
+            async with self._lock:
+                for q in self._clients:
+                    try:
+                        q.put_nowait(message)
+                    except asyncio.QueueFull:
+                        pass
 
     # ------------------------------------------------------------------
     # Typed emit helpers

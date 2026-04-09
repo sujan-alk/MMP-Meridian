@@ -39,6 +39,8 @@ def global_state() -> GlobalState:
         aggressiveness=0.5,
         zz_vol=0.0015,
         zz_regime="choppy",
+        hmm_regime="NORMAL",
+        hmm_regime_confidence=0.0,
         timestamp=1700000000.0,
         contributing_exchanges=["kucoin", "gate"],
     )

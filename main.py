@@ -2,12 +2,12 @@
 ALKIMI Market Making Bot — entry point.
 
 Starts:
-1. PostgreSQL database (Supabase)
-2. LiveFeed (WebSocket broadcaster)
-3. Orchestrator (4 exchange bots + global price loop)
-4. FastAPI + uvicorn server
+1. FastAPI + uvicorn server (immediately, for health checks)
+2. PostgreSQL database (Supabase) — with retries
+3. LiveFeed (WebSocket broadcaster)
+4. Orchestrator (4 exchange bots + global price loop)
 
-All four run concurrently via asyncio.gather().
+All run concurrently via asyncio.gather().
 """
 
 from __future__ import annotations
@@ -27,6 +27,28 @@ from db.database import Database
 from utils.logging import configure_logging, get_logger
 
 log = get_logger("main")
+
+DB_CONNECT_RETRIES = 10
+DB_CONNECT_DELAY = 5  # seconds between retries
+
+
+async def connect_db_with_retries(db: Database) -> bool:
+    """Attempt to connect to the database with retries."""
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            await db.connect()
+            return True
+        except Exception as exc:
+            log.warning(
+                "db_connect_retry",
+                attempt=attempt,
+                max_retries=DB_CONNECT_RETRIES,
+                error=str(exc),
+            )
+            if attempt < DB_CONNECT_RETRIES:
+                await asyncio.sleep(DB_CONNECT_DELAY)
+    log.error("db_connect_failed", msg="All retries exhausted")
+    return False
 
 
 async def main() -> None:
@@ -61,21 +83,13 @@ async def main() -> None:
         exchanges=[ex.exchange for ex in config.enabled_exchanges()],
     )
 
-    # Initialise shared services
+    # Initialise shared services (DB connects later with retries)
     db = Database(settings.supabase_db_url)
-    await db.connect()
-
     live_feed = LiveFeed()
 
-    orchestrator = Orchestrator(
-        config=config,
-        db=db,
-        live_feed=live_feed,
-        live_mode=settings.live_mode,
-    )
-
-    # Build FastAPI app
-    app = create_app(orchestrator, db, live_feed)
+    # Build FastAPI app — starts immediately so health check passes
+    # Orchestrator is created after DB connects
+    app = create_app(None, db, live_feed)
 
     # Configure uvicorn
     uvi_config = uvicorn.Config(
@@ -83,7 +97,7 @@ async def main() -> None:
         host="0.0.0.0",
         port=settings.port,
         log_level=settings.log_level.lower(),
-        access_log=False,  # structlog handles access logging
+        access_log=False,
     )
     server = uvicorn.Server(uvi_config)
 
@@ -101,8 +115,27 @@ async def main() -> None:
     async def run_server():
         await server.serve()
 
-    async def run_orchestrator():
+    async def run_bot():
+        """Connect DB, then start the orchestrator."""
         try:
+            # Connect to DB with retries
+            connected = await connect_db_with_retries(db)
+            if not connected:
+                log.error("bot_startup_failed", msg="Could not connect to database")
+                shutdown_event.set()
+                return
+
+            # Now create and start orchestrator
+            orchestrator = Orchestrator(
+                config=config,
+                db=db,
+                live_feed=live_feed,
+                live_mode=settings.live_mode,
+            )
+
+            # Update the app with the orchestrator reference
+            app.state.orchestrator = orchestrator
+
             await orchestrator.start()
         except Exception as exc:
             log.error("orchestrator_crashed", error=str(exc), exc_info=True)
@@ -112,7 +145,9 @@ async def main() -> None:
     async def wait_for_shutdown():
         await shutdown_event.wait()
         log.info("shutdown_initiated")
-        await orchestrator.stop()
+        orchestrator = getattr(app.state, "orchestrator", None)
+        if orchestrator:
+            await orchestrator.stop()
         server.should_exit = True
         await db.disconnect()
         log.info("shutdown_complete")
@@ -120,7 +155,7 @@ async def main() -> None:
     try:
         await asyncio.gather(
             run_server(),
-            run_orchestrator(),
+            run_bot(),
             wait_for_shutdown(),
             return_exceptions=True,
         )

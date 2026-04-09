@@ -99,7 +99,7 @@ class TestDryRunMode:
         """Dry-run orders should be persisted to the database."""
         grid = make_grid()
         await order_manager.diff_and_repost(grid)
-        count = await db.fetchval("SELECT COUNT(*) FROM orders")
+        count = await db.fetchval("SELECT COUNT(*) FROM mm_bot.orders")
         assert count == 6
 
 
@@ -185,7 +185,7 @@ class TestCancelAll:
         await order_manager.diff_and_repost(grid)
         await order_manager.cancel_all()
 
-        count = await db.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'canceled'")
+        count = await db.fetchval("SELECT COUNT(*) FROM mm_bot.orders WHERE status = 'canceled'")
         assert count == 6
 
     @pytest.mark.asyncio
@@ -226,16 +226,16 @@ class TestPriceTolerance:
     """Tests for the _has_order_near static method and tolerance logic."""
 
     def test_within_tolerance(self):
-        """Orders within 5bps should be considered matching."""
+        """Orders within 3bps should be considered matching."""
         open_prices = {0.10000: make_order(price=0.10000)}
-        # 4bps off: 0.10000 * 0.0004 = 0.00004
-        assert OrderManager._has_order_near(0.10004, open_prices)
+        # 2bps off: 0.10000 * 0.0002 = 0.00002
+        assert OrderManager._has_order_near(0.10002, open_prices)
 
     def test_outside_tolerance(self):
-        """Orders beyond 5bps should not match."""
+        """Orders beyond 3bps should not match."""
         open_prices = {0.10000: make_order(price=0.10000)}
-        # 10bps off: 0.10000 * 0.001 = 0.0001
-        assert not OrderManager._has_order_near(0.10010, open_prices)
+        # 5bps off: 0.10000 * 0.0005 = 0.00005
+        assert not OrderManager._has_order_near(0.10005, open_prices)
 
     def test_exact_match(self):
         """Exact price match should always be within tolerance."""

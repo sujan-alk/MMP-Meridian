@@ -25,10 +25,11 @@ from typing import TYPE_CHECKING, Optional
 from config.schema import BotConfig
 from core.exchange_bot import ExchangeBot
 from core.inventory_tracker import InventoryTracker
+from core.paper_trader import PaperTrader
 from core.regime_master import RegimeMaster, RegimeState
 from db.database import Database
 from exchange.base import BaseConnector
-from exchange.factory import create_connector
+from exchange.factory import create_connector, create_ws_connector
 from quant.aggressiveness import AggressivenessModel
 from quant.hmm_regime import HMMRegimeDetector
 from quant.volatility import VolatilityEngine
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
 log = get_logger("orchestrator")
 
-PRICE_LOOP_INTERVAL_S = 1.0
+PRICE_LOOP_INTERVAL_S = 0.5
 CANDLE_FETCH_INTERVAL_S = 60.0  # Refresh 1-min candles for Zhang-Zhang vol every 60s
 
 
@@ -99,6 +100,9 @@ class Orchestrator:
         self._regime_queues: dict[str, asyncio.Queue] = {}
         self._tasks: list[asyncio.Task] = []
 
+        # Paper trading (WS connectors + PaperTrader per exchange in dry-run mode)
+        self._paper_traders: dict[str, PaperTrader] = {}
+
         # Config hot-reload
         self._config_reload_event = asyncio.Event()
         self._running = False
@@ -137,6 +141,27 @@ class Orchestrator:
             self._regime_queues[ex_cfg.exchange] = regime_q
             self.regime_master.add_subscriber(regime_q)
 
+            # Create PaperTrader with WS connector in dry-run mode
+            paper_trader = None
+            if self.config.dry_run:
+                try:
+                    ws_conn = create_ws_connector(
+                        exchange_name=ex_cfg.exchange,
+                        symbol=ex_cfg.symbol,
+                        credentials=creds,
+                        quote_currency=ex_cfg.quote_currency,
+                        ccxt_options=ex_cfg.ccxt_options,
+                    )
+                    paper_trader = PaperTrader(
+                        exchange=ex_cfg.exchange,
+                        ws_connector=ws_conn,
+                        db=self.db,
+                        live_feed=self.live_feed,
+                    )
+                    self._paper_traders[ex_cfg.exchange] = paper_trader
+                except Exception as exc:
+                    log.warning("paper_trader_init_failed", exchange=ex_cfg.exchange, error=str(exc))
+
             bot = ExchangeBot(
                 config=ex_cfg,
                 connector=connector,
@@ -146,6 +171,7 @@ class Orchestrator:
                 agg_model=self.agg_model,
                 live_mode=self.live_mode and not self.config.dry_run,
                 regime_queue=regime_q,
+                paper_trader=paper_trader,
             )
 
             # Apply configured initial balances if present
@@ -159,6 +185,11 @@ class Orchestrator:
         for name, bot in self._bots.items():
             task = asyncio.create_task(bot.start(), name=f"bot_{name}")
             self._tasks.append(task)
+
+        # Start paper traders (WS order book streaming → fill simulation)
+        for name, pt in self._paper_traders.items():
+            pt_task = asyncio.create_task(pt.start(), name=f"paper_{name}")
+            self._tasks.append(pt_task)
 
         # Start the global price loop
         price_task = asyncio.create_task(self._price_loop(), name="price_loop")
@@ -174,11 +205,13 @@ class Orchestrator:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def stop(self) -> None:
-        """Gracefully stop all bots, the price loop, and the regime master."""
+        """Gracefully stop all bots, paper traders, the price loop, and the regime master."""
         log.info("orchestrator_stopping")
         self._running = False
         for bot in self._bots.values():
             await bot.stop()
+        for pt in self._paper_traders.values():
+            await pt.stop()
         await self.regime_master.stop()
         for task in self._tasks:
             task.cancel()

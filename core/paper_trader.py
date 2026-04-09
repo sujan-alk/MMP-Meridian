@@ -192,7 +192,7 @@ class PaperTrader:
             pnl_usd=sim_fill.pnl_usd,
         )
         try:
-            await insert_fill(self.db, db_fill)
+            await insert_fill(self.db, db_fill, pnl_usd=sim_fill.pnl_usd)
         except Exception as exc:
             log.warning("paper_trader_persist_fill_failed", error=str(exc))
 

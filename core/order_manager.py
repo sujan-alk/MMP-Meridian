@@ -29,7 +29,7 @@ from utils.time_utils import now_s
 log = get_logger("order_manager")
 
 # Price tolerance: if existing order is within this % of desired price, leave it in place
-PRICE_TOLERANCE_PCT = 0.05  # 0.05% = 5 basis points
+PRICE_TOLERANCE_PCT = 0.03  # 0.03% = 3 basis points
 
 
 @dataclass

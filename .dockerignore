@@ -1,0 +1,8 @@
+dashboard/node_modules
+dashboard/.next
+.venv
+__pycache__
+*.pyc
+.git
+.env
+*.env.local

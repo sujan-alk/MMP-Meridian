@@ -27,6 +27,9 @@ httpx>=0.27.0
 # Async HTTP (used by CCXT)
 aiohttp>=3.9.0
 
+# Protobuf (required by MEXC WebSocket via ccxt.pro)
+protobuf==5.29.5
+
 # Dev / testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

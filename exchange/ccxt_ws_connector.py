@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 
+import ccxt.pro as ccxt_pro
 import ccxt.async_support as ccxt
 
 from exchange.base import Ticker
@@ -56,6 +57,22 @@ class CCXTWSConnector(CCXTConnector, WSConnector):
         )
         # WSConnector sets self._ws_connected = False
         WSConnector.__init__(self, exchange_name=exchange_name, symbol=symbol)
+
+        # Create a ccxt.pro exchange instance for WebSocket streaming
+        pro_class = getattr(ccxt_pro, exchange_name, None)
+        if pro_class is None:
+            raise ValueError(f"ccxt.pro does not support exchange: {exchange_name}")
+        init_params: dict = {
+            "apiKey": credentials.get("api_key", ""),
+            "secret": credentials.get("api_secret", ""),
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        }
+        if credentials.get("passphrase"):
+            init_params["password"] = credentials["passphrase"]
+        if ccxt_options:
+            init_params["options"].update(ccxt_options)
+        self._pro_exchange = pro_class(init_params)
 
         self._book_queue: asyncio.Queue[OrderBook] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._ticker_queue: asyncio.Queue[Ticker] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
@@ -99,6 +116,10 @@ class CCXTWSConnector(CCXTConnector, WSConnector):
             except (asyncio.CancelledError, Exception):
                 pass
         self._ws_connected = False
+        try:
+            await self._pro_exchange.close()
+        except Exception:
+            pass
         log.info("ccxt_ws_disconnected", exchange=self.exchange_name)
 
     # ------------------------------------------------------------------
@@ -137,7 +158,7 @@ class CCXTWSConnector(CCXTConnector, WSConnector):
         retries = 0
         while True:
             try:
-                book_data = await self._exchange.watch_order_book(self.symbol)
+                book_data = await self._pro_exchange.watch_order_book(self.symbol)
                 retries = 0  # Reset on success
 
                 bids = [(float(p), float(q)) for p, q in (book_data.get("bids") or []) if q > 0]
@@ -191,7 +212,7 @@ class CCXTWSConnector(CCXTConnector, WSConnector):
         retries = 0
         while True:
             try:
-                ticker_data = await self._exchange.watch_ticker(self.symbol)
+                ticker_data = await self._pro_exchange.watch_ticker(self.symbol)
                 retries = 0
 
                 bid = float(ticker_data.get("bid") or 0)
@@ -199,7 +220,8 @@ class CCXTWSConnector(CCXTConnector, WSConnector):
                 last = float(ticker_data.get("last") or 0)
                 mid = (bid + ask) / 2.0 if bid and ask else last
 
-                ticker = Ticker(bid=bid, ask=ask, last=last, mid=mid)
+                ts = float(ticker_data.get("timestamp") or now_s() * 1000) / 1000.0
+                ticker = Ticker(bid=bid, ask=ask, last=last, mid=mid, timestamp=ts)
 
                 if self._ticker_queue.full():
                     try:
