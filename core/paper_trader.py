@@ -199,8 +199,9 @@ class PaperTrader:
     async def _emit_fill_event(self, sim_fill: SimulatedFill) -> None:
         """Broadcast an order_filled event to WebSocket clients."""
         try:
-            await self.live_feed.emit(
-                "order_filled",
+            from api.websocket import EventType
+            await self.live_feed.broadcast(
+                EventType.ORDER_FILLED,
                 {
                     "exchange": self.exchange,
                     "order_id": sim_fill.order_id,
