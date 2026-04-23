@@ -3,11 +3,15 @@ PostgreSQL schema migrations.
 Runs on startup via database.py.
 Each statement is executed individually (asyncpg does not support multi-statement execution).
 
-All tables live in the 'mm_bot' schema to keep them isolated from other
-tables in the same database (e.g. shared Supabase project).
+All tables live in a named schema to keep them isolated from other tables in the
+same database (e.g. shared Supabase project). Prod uses 'mm_bot'; tests use
+'mm_bot_test' so prod and test can share a single Supabase project safely.
+Override with the DB_SCHEMA env var.
 """
 
-SCHEMA_NAME = "mm_bot"
+import os
+
+SCHEMA_NAME = os.environ.get("DB_SCHEMA", "mm_bot")
 
 SCHEMA_STATEMENTS: list[str] = [
     # ------------------------------------------------------------------

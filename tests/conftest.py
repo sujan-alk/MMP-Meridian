@@ -10,6 +10,13 @@ Provides:
 
 from __future__ import annotations
 
+import os
+
+# Route all test DB traffic to the mm_bot_test schema so prod data in the same
+# Supabase project is never touched by test truncation. Must happen BEFORE any
+# `from db...` import so db/migrations.py picks it up at import time.
+os.environ.setdefault("DB_SCHEMA", "mm_bot_test")
+
 import asyncio
 from dataclasses import dataclass
 from typing import Any
@@ -176,13 +183,19 @@ async def db():
     Set TEST_DATABASE_URL in your environment to point at a test Postgres instance.
     Tables are truncated between tests for isolation.
     """
-    import os
+    from db.migrations import SCHEMA_NAME
     url = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/mm_bot_test")
+    # Safety guard: teardown TRUNCATEs SCHEMA_NAME tables. Refuse to run unless
+    # the schema is a dedicated test schema — this protects prod data even when
+    # TEST_DATABASE_URL points at a shared Supabase project.
+    assert "test" in SCHEMA_NAME.lower(), (
+        f"Refusing to run tests: DB_SCHEMA must contain 'test' (got: {SCHEMA_NAME!r}). "
+        "Tests must operate on a test schema, not a prod schema."
+    )
     database = Database(url)
     await database.connect()
     yield database
     # Clean up all tables between tests (order matters for foreign key safety)
-    from db.migrations import SCHEMA_NAME
     for table in ["rl_features", "inventory_snapshots", "fills", "orders"]:
         await database.execute(f"TRUNCATE {SCHEMA_NAME}.{table} CASCADE")
     await database.disconnect()

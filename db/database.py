@@ -43,6 +43,7 @@ class Database:
             min_size=2,
             max_size=10,
             init=_init_connection,
+            statement_cache_size=0,
         )
         # Run schema statements individually (table names are schema-qualified in migrations)
         for stmt in SCHEMA_STATEMENTS:
