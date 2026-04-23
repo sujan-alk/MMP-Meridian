@@ -33,7 +33,6 @@ class EventType(str, Enum):
     CONFIG_RELOADED = "config_reloaded"
     BOT_STARTED = "bot_started"
     BOT_STOPPED = "bot_stopped"
-    ORDER_FILLED = "order_filled"
 
 
 class LiveFeed:
