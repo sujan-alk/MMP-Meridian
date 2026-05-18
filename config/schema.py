@@ -149,6 +149,15 @@ class ExchangeBotConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     # Per-exchange CCXT options override (e.g. {"defaultType": "spot"})
     ccxt_options: dict = Field(default_factory=dict)
+    # Per-exchange C++ connector override.
+    # None  = defer to global USE_CPP_CONNECTOR env var (default)
+    # true  = always use C++ connector for this exchange (falls back to CCXT if .so not built)
+    # false = always use CCXT for this exchange, regardless of the env var
+    use_cpp_connector: bool | None = Field(
+        default=None,
+        description="Override USE_CPP_CONNECTOR env var for this exchange. "
+                    "null=follow env var, true=force C++, false=force CCXT.",
+    )
 
 
 # ---------------------------------------------------------------------------

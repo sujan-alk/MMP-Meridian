@@ -33,3 +33,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local docs (not for the public repo)
+my-docs/

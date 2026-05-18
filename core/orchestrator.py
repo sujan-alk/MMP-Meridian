@@ -131,6 +131,7 @@ class Orchestrator:
                 credentials=creds,
                 quote_currency=ex_cfg.quote_currency,
                 ccxt_options=ex_cfg.ccxt_options,
+                use_cpp=ex_cfg.use_cpp_connector,
             )
             self._connectors[ex_cfg.exchange] = connector
 
