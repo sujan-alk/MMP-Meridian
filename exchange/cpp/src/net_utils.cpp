@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <netinet/tcp.h>
 
 // STL
 #include <algorithm>
@@ -55,6 +56,12 @@ void TlsConn::connect(const std::string& host, int port) {
         ::freeaddrinfo(res);
         throw std::runtime_error("socket() failed: " + std::string(std::strerror(errno)));
     }
+
+    // Disable Nagle algorithm — send each packet immediately without waiting
+    // to batch with subsequent data. Critical for small frequent WebSocket
+    // frames like order placement where every millisecond counts.
+    int nodelay = 1;
+    ::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
     int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
